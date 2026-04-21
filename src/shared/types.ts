@@ -14,6 +14,13 @@ export type AppState =
  */
 export type RecordingFormat = "webm" | "pcm";
 
+/** Recording options passed from main process to renderer. */
+export interface StartRecordingOptions {
+  format: RecordingFormat;
+  chunkRolloverMs: number;
+  rolloverClickGain: number;
+}
+
 /** IPC channel names */
 export const IPC = {
   // main -> renderer
@@ -38,7 +45,7 @@ export interface AudioStreamMeta {
 
 /** Exposed API in renderer via contextBridge */
 export interface PiVoiceAPI {
-  onStartRecording: (callback: (format: RecordingFormat) => void) => void;
+  onStartRecording: (callback: (options: StartRecordingOptions) => void) => void;
   onStopRecording: (callback: () => void) => void;
   onPlayAudioStreamStart: (callback: (meta: AudioStreamMeta) => void) => void;
   onPlayAudioStreamChunk: (callback: (pcmData: ArrayBuffer) => void) => void;

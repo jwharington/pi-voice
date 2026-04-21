@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,6 +72,11 @@ describe("parseKeyBinding", () => {
     const f12 = parseKeyBinding("f12");
     expect(f12.keycode).toBeGreaterThan(0);
     expect(f1.keycode).not.toBe(f12.keycode);
+  });
+
+  test("parses extended function keys", () => {
+    const f23 = parseKeyBinding("f23");
+    expect(f23.keycode).toBeGreaterThan(0);
   });
 
   test("parses number keys", () => {
@@ -161,16 +166,29 @@ describe("formatKeyDisplay", () => {
 
 describe("loadConfig", () => {
   let tmpDir: string;
+  let homeDir: string;
+  let originalHome: string | undefined;
 
   beforeEach(() => {
+    originalHome = process.env.HOME;
     tmpDir = join(tmpdir(), `pi-voice-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    homeDir = join(tmpDir, "home");
     mkdirSync(tmpDir, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    process.env.HOME = homeDir;
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   test("returns defaults when no config file exists", () => {
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("local");
     expect(config.ttsEnabled).toBe(true);
+    expect(config.recordingChunkMs).toBe(30000);
+    expect(config.rolloverClickGain).toBe(0.005);
     expect(config.key.meta).toBe(true);
     expect(config.key.shift).toBe(true);
     expect(config.keyDisplay.length).toBeGreaterThan(0);
@@ -187,6 +205,39 @@ describe("loadConfig", () => {
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("gemini");
     expect(config.ttsEnabled).toBe(true);
+    expect(config.recordingChunkMs).toBe(30000);
+    expect(config.rolloverClickGain).toBe(0.005);
+    expect(config.key.ctrl).toBe(true);
+  });
+
+  test("loads config from nearest ascendant directory", () => {
+    const projectRoot = join(tmpDir, "work");
+    const nestedDir = join(projectRoot, "a", "b");
+    const piDir = join(projectRoot, ".pi");
+    mkdirSync(nestedDir, { recursive: true });
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "pi-voice.json"),
+      JSON.stringify({ key: "ctrl+t", provider: "gemini" }),
+    );
+
+    const config = loadConfig(nestedDir);
+    expect(config.provider).toBe("gemini");
+    expect(config.key.ctrl).toBe(true);
+  });
+
+  test("falls back to global config when no ascendant config exists", () => {
+    const cwd = join(tmpDir, "work", "project");
+    const globalPiDir = join(homeDir, ".pi");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(globalPiDir, { recursive: true });
+    writeFileSync(
+      join(globalPiDir, "pi-voice.json"),
+      JSON.stringify({ key: "ctrl+t", provider: "openai" }),
+    );
+
+    const config = loadConfig(cwd);
+    expect(config.provider).toBe("openai");
     expect(config.key.ctrl).toBe(true);
   });
 
@@ -213,6 +264,19 @@ describe("loadConfig", () => {
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("openai");
     expect(config.ttsEnabled).toBe(false);
+  });
+
+  test("loads chunk rollover and click gain when provided", () => {
+    const piDir = join(tmpDir, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "pi-voice.json"),
+      JSON.stringify({ recordingChunkMs: 45000, rolloverClickGain: 0.01 }),
+    );
+
+    const config = loadConfig(tmpDir);
+    expect(config.recordingChunkMs).toBe(45000);
+    expect(config.rolloverClickGain).toBe(0.01);
   });
 
   test("accepts all valid providers", () => {

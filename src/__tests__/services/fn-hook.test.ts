@@ -137,6 +137,19 @@ describe("FnHook", () => {
     expect(onFnDown).not.toHaveBeenCalled();
   });
 
+  test("allows extra modifiers when required modifiers are present", () => {
+    const onFnDown = mock(() => {});
+    const onFnUp = mock(() => {});
+    const binding = { keycode: 20, ctrl: true, shift: false, alt: false, meta: false };
+    const hook = new FnHook({ onFnDown, onFnUp }, binding, "ctrl+t");
+
+    hook.start();
+
+    // Required ctrl is pressed, extra shift/meta should not block matching.
+    simulateKeyDown(20, { ctrlKey: true, shiftKey: true, metaKey: true });
+    expect(onFnDown).toHaveBeenCalledTimes(1);
+  });
+
   test("calls onFnUp when release key matches", () => {
     const onFnDown = mock(() => {});
     const onFnUp = mock(() => {});

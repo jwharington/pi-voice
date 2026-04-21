@@ -67,13 +67,15 @@ export class FnHook {
     uIOhook.on("keydown", (e: UiohookKeyboardEvent) => {
       if (this.active) return; // already recording, ignore repeats
 
-      // Check: required modifiers + main key
+      // Match main key and ensure all configured modifiers are pressed.
+      // Extra modifier flags are tolerated because some keys (e.g. Copilot/F23)
+      // may be reported with platform-specific modifier bits.
       if (
         e.keycode === this.binding.keycode &&
-        e.ctrlKey === this.binding.ctrl &&
-        e.shiftKey === this.binding.shift &&
-        e.altKey === this.binding.alt &&
-        e.metaKey === this.binding.meta
+        (!this.binding.ctrl || e.ctrlKey) &&
+        (!this.binding.shift || e.shiftKey) &&
+        (!this.binding.alt || e.altKey) &&
+        (!this.binding.meta || e.metaKey)
       ) {
         this.active = true;
         this.callbacks.onFnDown();

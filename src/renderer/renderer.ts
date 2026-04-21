@@ -13,9 +13,14 @@ import { downsample } from "../shared/audio-utils.js";
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let audioContext: AudioContext | null = null;
-let recordingTimeoutId: number | null = null;
+let recordingChunkTimerId: number | null = null;
+let recordingRequested = false;
+let recordingStartToken = 0;
 
-const MAX_RECORDING_MS = 30_000;
+const DEFAULT_CHUNK_ROLLOVER_MS = 30_000;
+const DEFAULT_ROLLOVER_CLICK_GAIN = 0.005;
+const MIN_SEND_AUDIO_SECONDS = 1.0;
+const SILENCE_RMS_THRESHOLD = 0.003;
 
 // ── PCM recording state ──────────────────────────────────────────────
 let pcmStream: MediaStream | null = null;
@@ -23,6 +28,8 @@ let pcmSourceNode: MediaStreamAudioSourceNode | null = null;
 let pcmProcessorNode: ScriptProcessorNode | null = null;
 let pcmChunks: Float32Array[] = [];
 let pcmRecording = false;
+let chunkRolloverMs = DEFAULT_CHUNK_ROLLOVER_MS;
+let rolloverClickGain = DEFAULT_ROLLOVER_CLICK_GAIN;
 
 /** Target sample rate for Whisper */
 const WHISPER_SAMPLE_RATE = 16000;
@@ -38,7 +45,7 @@ function playSoundEffect(url: string) {
       const source = ctx.createBufferSource();
       source.buffer = decoded;
       const gain = ctx.createGain();
-      gain.gain.value = 2.0;
+      gain.gain.value = 0.12;
       source.connect(gain);
       gain.connect(ctx.destination);
       source.start();
@@ -46,6 +53,29 @@ function playSoundEffect(url: string) {
     .catch((err) => {
       console.error("Failed to play sound effect:", err);
     });
+}
+
+function playCrossoverClick() {
+  const ctx = audioContext ?? new AudioContext();
+  if (!audioContext) audioContext = ctx;
+
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(1400, now);
+
+  // Keep crossover click subtle so it doesn't distract speech capture.
+  gain.gain.setValueAtTime(0.0, now);
+  gain.gain.linearRampToValueAtTime(rolloverClickGain, now + 0.004);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+
+  osc.start(now);
+  osc.stop(now + 0.03);
 }
 
 // ── WebM recording (for cloud providers) ─────────────────────────────
@@ -77,6 +107,17 @@ function startWebmRecording(stream: MediaStream) {
   };
 
   mediaRecorder.start(100);
+}
+
+async function flushWebmChunk() {
+  if (audioChunks.length === 0) return;
+
+  const chunkBlob = new Blob(audioChunks, { type: "audio/webm" });
+  audioChunks = [];
+
+  if (chunkBlob.size === 0) return;
+  const arrayBuffer = await chunkBlob.arrayBuffer();
+  window.piVoice.sendRecordingData(arrayBuffer);
 }
 
 function stopWebmRecording() {
@@ -111,6 +152,47 @@ function startPcmRecording(stream: MediaStream) {
   pcmProcessorNode.connect(ctx.destination);
 }
 
+function flushPcmChunk() {
+  if (pcmChunks.length === 0) {
+    return false;
+  }
+
+  // Concatenate all chunks
+  const totalLength = pcmChunks.reduce((sum, c) => sum + c.length, 0);
+  const fullBuffer = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of pcmChunks) {
+    fullBuffer.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Downsample from AudioContext.sampleRate (typically 48kHz) to 16kHz
+  const sourceSampleRate = audioContext?.sampleRate ?? 48000;
+  const resampled = downsample(fullBuffer, sourceSampleRate, WHISPER_SAMPLE_RATE);
+
+  const durationSec = resampled.length / WHISPER_SAMPLE_RATE;
+  if (durationSec < MIN_SEND_AUDIO_SECONDS) {
+    pcmChunks = [];
+    return false;
+  }
+
+  let sumSquares = 0;
+  for (let i = 0; i < resampled.length; i++) {
+    const s = resampled[i]!;
+    sumSquares += s * s;
+  }
+  const rms = Math.sqrt(sumSquares / resampled.length);
+  if (rms < SILENCE_RMS_THRESHOLD) {
+    pcmChunks = [];
+    return false;
+  }
+
+  // Send as ArrayBuffer (Float32)
+  window.piVoice.sendRecordingData(resampled.buffer as ArrayBuffer);
+  pcmChunks = [];
+  return true;
+}
+
 function stopPcmRecording() {
   if (!pcmRecording && !pcmProcessorNode && !pcmStream) {
     return;
@@ -130,21 +212,7 @@ function stopPcmRecording() {
     return;
   }
 
-  // Concatenate all chunks
-  const totalLength = pcmChunks.reduce((sum, c) => sum + c.length, 0);
-  const fullBuffer = new Float32Array(totalLength);
-  let offset = 0;
-  for (const chunk of pcmChunks) {
-    fullBuffer.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  // Downsample from AudioContext.sampleRate (typically 48kHz) to 16kHz
-  const sourceSampleRate = audioContext?.sampleRate ?? 48000;
-  const resampled = downsample(fullBuffer, sourceSampleRate, WHISPER_SAMPLE_RATE);
-
-  // Send as ArrayBuffer (Float32)
-  window.piVoice.sendRecordingData(resampled.buffer as ArrayBuffer);
+  flushPcmChunk();
 
   pcmChunks = [];
   pcmProcessorNode = null;
@@ -152,15 +220,42 @@ function stopPcmRecording() {
   pcmStream = null;
 }
 
-function clearRecordingTimeout() {
-  if (recordingTimeoutId !== null) {
-    clearTimeout(recordingTimeoutId);
-    recordingTimeoutId = null;
+function clearRecordingChunkTimer() {
+  if (recordingChunkTimerId !== null) {
+    clearTimeout(recordingChunkTimerId);
+    recordingChunkTimerId = null;
   }
 }
 
+function isRecordingActive(): boolean {
+  if (currentRecordingFormat === "pcm") {
+    return pcmRecording;
+  }
+  return !!mediaRecorder && mediaRecorder.state !== "inactive";
+}
+
+function rolloverCurrentRecordingChunk() {
+  if (!isRecordingActive()) return;
+
+  playCrossoverClick();
+
+  if (currentRecordingFormat === "pcm") {
+    flushPcmChunk();
+  } else {
+    void flushWebmChunk();
+  }
+}
+
+function scheduleRecordingChunkRollover() {
+  clearRecordingChunkTimer();
+  recordingChunkTimerId = window.setTimeout(() => {
+    rolloverCurrentRecordingChunk();
+    scheduleRecordingChunkRollover();
+  }, chunkRolloverMs);
+}
+
 function stopCurrentRecording(playToggleSound: boolean) {
-  clearRecordingTimeout();
+  clearRecordingChunkTimer();
 
   if (playToggleSound) {
     playSoundEffect(toggleOffUrl);
@@ -178,18 +273,27 @@ function stopCurrentRecording(playToggleSound: boolean) {
 let currentRecordingFormat: "webm" | "pcm" = "webm";
 
 window.piVoice.onStartRecording(async (format) => {
-  playSoundEffect(toggleOnUrl);
-  currentRecordingFormat = format;
-  clearRecordingTimeout();
+  recordingRequested = true;
+  const startToken = ++recordingStartToken;
 
-  recordingTimeoutId = window.setTimeout(() => {
-    stopCurrentRecording(true);
-  }, MAX_RECORDING_MS);
+  playSoundEffect(toggleOnUrl);
+  currentRecordingFormat = format.format;
+  chunkRolloverMs = format.chunkRolloverMs;
+  rolloverClickGain = format.rolloverClickGain;
+  clearRecordingChunkTimer();
+  scheduleRecordingChunkRollover();
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    if (format === "pcm") {
+    // If key-up happened while waiting for mic permission/device startup,
+    // abort this start to avoid leaving the mic active.
+    if (!recordingRequested || startToken !== recordingStartToken) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+
+    if (format.format === "pcm") {
       startPcmRecording(stream);
     } else {
       startWebmRecording(stream);
@@ -201,6 +305,9 @@ window.piVoice.onStartRecording(async (format) => {
 });
 
 window.piVoice.onStopRecording(() => {
+  recordingRequested = false;
+  // Invalidate any in-flight start operation waiting on getUserMedia.
+  recordingStartToken++;
   stopCurrentRecording(true);
 });
 

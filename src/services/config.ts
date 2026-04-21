@@ -1,5 +1,6 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { UiohookKey } from "uiohook-napi";
 import { z } from "zod";
 import logger from "./logger.js";
@@ -28,6 +29,10 @@ export interface PiVoiceConfig {
   provider: SpeechProvider;
   /** Whether to synthesize spoken output (default: true) */
   ttsEnabled: boolean;
+  /** Recording rollover interval in ms for continuous chunking (default: 30000) */
+  recordingChunkMs: number;
+  /** Crossover click peak gain (default: 0.02) */
+  rolloverClickGain: number;
 }
 
 // ── Key name → UiohookKey mapping ────────────────────────────────────
@@ -86,6 +91,18 @@ const KEY_MAP: Record<string, number> = {
   f10: UiohookKey.F10,
   f11: UiohookKey.F11,
   f12: UiohookKey.F12,
+  f13: UiohookKey.F13,
+  f14: UiohookKey.F14,
+  f15: UiohookKey.F15,
+  f16: UiohookKey.F16,
+  f17: UiohookKey.F17,
+  f18: UiohookKey.F18,
+  f19: UiohookKey.F19,
+  f20: UiohookKey.F20,
+  f21: UiohookKey.F21,
+  f22: UiohookKey.F22,
+  f23: UiohookKey.F23,
+  f24: UiohookKey.F24,
 
   // Special keys
   space: UiohookKey.Space,
@@ -206,6 +223,8 @@ function defaultConfig(): PiVoiceConfig {
     keyDisplay: formatKeyDisplay(binding),
     provider: DEFAULT_PROVIDER,
     ttsEnabled: true,
+    recordingChunkMs: 30000,
+    rolloverClickGain: 0.005,
   };
 }
 
@@ -229,6 +248,8 @@ const configFileSchema = z.object({
     .default(DEFAULT_KEY_STRING),
   provider: z.enum(["local", "gemini", "openai", "elevenlabs"]).optional().default(DEFAULT_PROVIDER),
   tts: z.boolean().optional().default(true),
+  recordingChunkMs: z.number().int().min(5000).max(300000).optional().default(30000),
+  rolloverClickGain: z.number().min(0).max(0.2).optional().default(0.005),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -248,21 +269,58 @@ export class ConfigError extends Error {
 }
 
 /**
- * Load config from `<cwd>/.pi/pi-voice.json`.
- * Falls back to defaults if the file doesn't exist.
+ * Resolve config path from nearest ascendant `.pi/pi-voice.json`,
+ * then fallback to `~/.pi/pi-voice.json`.
+ */
+function resolveConfigPath(cwd: string): string | undefined {
+  let currentDir = resolve(cwd);
+
+  while (true) {
+    const candidate = join(currentDir, ".pi", "pi-voice.json");
+    try {
+      readFileSync(candidate, "utf-8");
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new ConfigError(candidate, `Failed to read file: ${(err as Error).message}`);
+      }
+    }
+
+    const parent = dirname(currentDir);
+    if (parent === currentDir) break;
+    currentDir = parent;
+  }
+
+  const homePath = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
+  const globalConfigPath = join(homePath, ".pi", "pi-voice.json");
+  try {
+    readFileSync(globalConfigPath, "utf-8");
+    return globalConfigPath;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw new ConfigError(globalConfigPath, `Failed to read file: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Load config from nearest ascendant `.pi/pi-voice.json`.
+ * Falls back to `~/.pi/pi-voice.json`, then defaults if missing.
  * Throws `ConfigError` if the file exists but contains invalid values.
  */
 export function loadConfig(cwd: string): PiVoiceConfig {
-  const configPath = join(cwd, ".pi", "pi-voice.json");
+  const configPath = resolveConfigPath(cwd);
+
+  if (!configPath) {
+    logger.info({ cwd }, "No config file found in ascendants or global path, using defaults");
+    return defaultConfig();
+  }
 
   let raw: string;
   try {
     raw = readFileSync(configPath, "utf-8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      logger.info({ configPath }, "No config file found, using defaults");
-      return defaultConfig();
-    }
     throw new ConfigError(configPath, `Failed to read file: ${(err as Error).message}`);
   }
 
@@ -291,7 +349,14 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   const display = formatKeyDisplay(binding);
 
   logger.info(
-    { key: display, provider: parsed.provider, tts: parsed.tts, configPath },
+    {
+      key: display,
+      provider: parsed.provider,
+      tts: parsed.tts,
+      recordingChunkMs: parsed.recordingChunkMs,
+      rolloverClickGain: parsed.rolloverClickGain,
+      configPath,
+    },
     "Loaded config",
   );
   return {
@@ -299,5 +364,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     keyDisplay: display,
     provider: parsed.provider,
     ttsEnabled: parsed.tts,
+    recordingChunkMs: parsed.recordingChunkMs,
+    rolloverClickGain: parsed.rolloverClickGain,
   };
 }

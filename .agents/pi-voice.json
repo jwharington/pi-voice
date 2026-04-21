@@ -1,4 +1,5 @@
 {
   "provider": "openai",
-  "tts": false
+  "tts": false,
+  "key": "F23"
 }

@@ -1,9 +1,33 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC, type PiVoiceAPI, type AudioStreamMeta, type RecordingFormat } from "./shared/types.js";
+import {
+  IPC,
+  type PiVoiceAPI,
+  type AudioStreamMeta,
+  type RecordingFormat,
+  type StartRecordingOptions,
+} from "./shared/types.js";
 
 const api: PiVoiceAPI = {
   onStartRecording: (callback) => {
-    ipcRenderer.on(IPC.START_RECORDING, (_event, format: RecordingFormat) => callback(format ?? "webm"));
+    ipcRenderer.on(
+      IPC.START_RECORDING,
+      (_event, payload: StartRecordingOptions | RecordingFormat) => {
+        if (typeof payload === "string") {
+          callback({
+            format: payload ?? "webm",
+            chunkRolloverMs: 30000,
+            rolloverClickGain: 0.005,
+          });
+          return;
+        }
+
+        callback({
+          format: payload?.format ?? "webm",
+          chunkRolloverMs: payload?.chunkRolloverMs ?? 30000,
+          rolloverClickGain: payload?.rolloverClickGain ?? 0.005,
+        });
+      },
+    );
   },
   onStopRecording: (callback) => {
     ipcRenderer.on(IPC.STOP_RECORDING, () => callback());

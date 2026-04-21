@@ -24,7 +24,7 @@ import {
 } from "./services/daemon-ipc.js";
 import { resolveModelPath } from "./services/whisper-model.js";
 import logger from "./services/logger.js";
-import { publishVoiceDraft } from "./services/voice-focus.js";
+import { publishVoiceActivity, publishVoiceDraft } from "./services/voice-focus.js";
 
 // ── Resolve working directory ───────────────────────────────────────
 // CLI passes the caller's cwd via PI_VOICE_CWD env variable.
@@ -35,13 +35,24 @@ let fnHook: FnHook | null = null;
 let currentState: AppState = "idle";
 let lastTranscript = "";
 let lastResponse = "";
+let recordingSessionActive = false;
+let recordingProcessingChain: Promise<void> = Promise.resolve();
 
 // Tell pi-session to use the caller's cwd
 piSession.setSessionCwd(workingCwd);
 
 function setState(state: AppState, message?: string) {
   currentState = state;
+  publishVoiceActivity(state === "recording");
   logger.info({ state, message }, "State changed");
+}
+
+function setPostChunkState(idleMessage?: string) {
+  if (recordingSessionActive) {
+    setState("recording", "Recording...");
+  } else {
+    setState("idle", idleMessage);
+  }
 }
 
 function createWindow() {
@@ -79,130 +90,135 @@ function setupIpcHandlers(config: PiVoiceConfig) {
   const provider = config.provider;
   const ttsEnabled = config.ttsEnabled;
   // Receive recording data from renderer
-  ipcMain.on(IPC.RECORDING_DATA, async (_event, data: ArrayBuffer) => {
-    if (currentState !== "recording") return;
-
+  ipcMain.on(IPC.RECORDING_DATA, (_event, data: ArrayBuffer) => {
     // Skip very short recordings (likely accidental taps)
     if (data.byteLength < 1000) {
       logger.info("Recording too short, ignoring");
-      setState("idle", "Recording too short");
       return;
     }
 
-    try {
-      // Step 1: Transcribe
-      setState("transcribing", "Transcribing...");
-      const text = await transcribe(data, provider);
-      lastTranscript = text;
+    recordingProcessingChain = recordingProcessingChain.then(async () => {
+      try {
+        // Step 1: Transcribe
+        setState("transcribing", "Transcribing...");
+        const text = await transcribe(data, provider);
+        lastTranscript = text;
 
-      if (!text) {
-        setState("idle", "No speech detected");
-        return;
-      }
-
-      // Step 2: Send to pi – start TTS as each text segment completes
-      setState("thinking", `Sent: "${text}"`);
-
-      if (!ttsEnabled) {
-        // Text-only mode: if a /voice terminal has focus, inject transcript
-        // into that terminal's editor buffer (without submitting).
-        const focus = publishVoiceDraft(text);
-        if (focus) {
-          lastResponse = "";
-          setState("idle", "Inserted transcript into focused pi terminal");
+        if (!text) {
+          setPostChunkState("No speech detected");
           return;
         }
 
-        // Fallback when no /voice focus exists: send to internal agent session.
-        const responseParts: string[] = [];
-        await piSession.prompt(text, {
-          onTextEnd: (segment) => {
-            responseParts.push(segment);
-            lastResponse = responseParts.join("\n");
-          },
-        });
+        // Step 2: Send to pi – start TTS as each text segment completes
+        setState("thinking", `Sent: "${text}"`);
 
-        if (lastResponse.trim().length > 0) {
-          const preview = lastResponse.length > 100
-            ? `${lastResponse.slice(0, 100)}...`
-            : lastResponse;
-          setState("idle", `Response: ${preview}`);
-        } else {
-          setState("idle", "No response from pi");
+        if (!ttsEnabled) {
+          // Text-only mode: if a /voice terminal has focus, inject transcript
+          // into that terminal's editor buffer (without submitting).
+          const focus = publishVoiceDraft(text);
+          if (focus) {
+            lastResponse = "";
+            setPostChunkState("Inserted transcript into focused pi terminal");
+            return;
+          }
+
+          // Fallback when no /voice focus exists: send to internal agent session.
+          const responseParts: string[] = [];
+          await piSession.prompt(text, {
+            onTextEnd: (segment) => {
+              responseParts.push(segment);
+              lastResponse = responseParts.join("\n");
+            },
+          });
+
+          if (lastResponse.trim().length > 0) {
+            const preview = lastResponse.length > 100
+              ? `${lastResponse.slice(0, 100)}...`
+              : lastResponse;
+            setPostChunkState(`Response: ${preview}`);
+          } else {
+            setPostChunkState("No response from pi");
+          }
+          return;
         }
-        return;
-      }
 
-      if (provider === "local") {
-        // Local TTS: say command plays directly through system audio
-        let speakStarted = false;
-        let ttsChain = Promise.resolve();
+        if (provider === "local") {
+          // Local TTS: say command plays directly through system audio
+          let speakStarted = false;
+          let ttsChain = Promise.resolve();
 
-        await piSession.prompt(text, {
-          onTextEnd: (segment) => {
-            if (!speakStarted) {
-              speakStarted = true;
-              setState("speaking", "Speaking...");
-            }
-            ttsChain = ttsChain.then(() => speakLocal(segment));
-          },
-        });
-
-        await ttsChain;
-
-        if (!speakStarted) {
-          setState("idle", "No response from pi");
-        } else {
-          setState("idle");
-        }
-      } else {
-        // Cloud providers: stream PCM through Electron renderer
-        let streamStarted = false;
-        let ttsChain = Promise.resolve();
-
-        await piSession.prompt(text, {
-          onTextEnd: (segment) => {
-            if (!streamStarted) {
-              streamStarted = true;
-              setState("speaking", "Generating speech...");
-              mainWindow?.webContents.send(IPC.PLAY_AUDIO_STREAM_START, {
-                sampleRate: TTS_SAMPLE_RATE,
-                channels: TTS_CHANNELS,
-                bitsPerSample: TTS_BITS_PER_SAMPLE,
-              });
-            }
-
-            ttsChain = ttsChain.then(async () => {
-              for await (const pcmChunk of synthesizeStream(segment, provider)) {
-                mainWindow?.webContents.send(
-                  IPC.PLAY_AUDIO_STREAM_CHUNK,
-                  pcmChunk.buffer.slice(
-                    pcmChunk.byteOffset,
-                    pcmChunk.byteOffset + pcmChunk.byteLength
-                  )
-                );
+          await piSession.prompt(text, {
+            onTextEnd: (segment) => {
+              if (!speakStarted) {
+                speakStarted = true;
+                setState("speaking", "Speaking...");
               }
-            });
-          },
-        });
+              ttsChain = ttsChain.then(() => speakLocal(segment));
+            },
+          });
 
-        await ttsChain;
+          await ttsChain;
 
-        if (streamStarted) {
-          mainWindow?.webContents.send(IPC.PLAY_AUDIO_STREAM_END);
+          if (!speakStarted) {
+            setPostChunkState("No response from pi");
+          } else {
+            setPostChunkState();
+          }
         } else {
-          setState("idle", "No response from pi");
+          // Cloud providers: stream PCM through Electron renderer
+          let streamStarted = false;
+          let ttsChain = Promise.resolve();
+
+          await piSession.prompt(text, {
+            onTextEnd: (segment) => {
+              if (!streamStarted) {
+                streamStarted = true;
+                setState("speaking", "Generating speech...");
+                mainWindow?.webContents.send(IPC.PLAY_AUDIO_STREAM_START, {
+                  sampleRate: TTS_SAMPLE_RATE,
+                  channels: TTS_CHANNELS,
+                  bitsPerSample: TTS_BITS_PER_SAMPLE,
+                });
+              }
+
+              ttsChain = ttsChain.then(async () => {
+                for await (const pcmChunk of synthesizeStream(segment, provider)) {
+                  mainWindow?.webContents.send(
+                    IPC.PLAY_AUDIO_STREAM_CHUNK,
+                    pcmChunk.buffer.slice(
+                      pcmChunk.byteOffset,
+                      pcmChunk.byteOffset + pcmChunk.byteLength
+                    )
+                  );
+                }
+              });
+            },
+          });
+
+          await ttsChain;
+
+          if (streamStarted) {
+            mainWindow?.webContents.send(IPC.PLAY_AUDIO_STREAM_END);
+          } else {
+            setPostChunkState("No response from pi");
+          }
         }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ err: msg }, "Pipeline error");
+        setState("error", msg);
+        // Return to recording/idle after a brief error display.
+        setTimeout(() => {
+          if (currentState === "error") {
+            if (recordingSessionActive) {
+              setState("recording", "Recording...");
+            } else {
+              setState("idle");
+            }
+          }
+        }, 3000);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ err: msg }, "Pipeline error");
-      setState("error", msg);
-      // Return to idle after a brief error display
-      setTimeout(() => {
-        if (currentState === "error") setState("idle");
-      }, 3000);
-    }
+    });
   });
 
   ipcMain.on(IPC.RECORDING_ERROR, (_event, error: string) => {
@@ -232,20 +248,33 @@ function setupFnHook(config: ReturnType<typeof loadConfig>) {
   fnHook = new FnHook(
     {
       onFnDown: () => {
-        if (currentState !== "idle") {
+        if (recordingSessionActive || currentState !== "idle") {
           logger.info(
             { key: config.keyDisplay, state: currentState },
             "Key pressed but not idle, ignoring",
           );
           return;
         }
+        recordingSessionActive = true;
         setState("recording", "Recording...");
-        mainWindow?.webContents.send(IPC.START_RECORDING, recordingFormat);
+        mainWindow?.webContents.send(IPC.START_RECORDING, {
+          format: recordingFormat,
+          chunkRolloverMs: config.recordingChunkMs,
+          rolloverClickGain: config.rolloverClickGain,
+        });
       },
       onFnUp: () => {
-        if (currentState !== "recording") return;
+        if (!recordingSessionActive) return;
+        recordingSessionActive = false;
         mainWindow?.webContents.send(IPC.STOP_RECORDING);
-        // State will transition when recording data arrives via IPC
+
+        // If quick tap produced no audio chunk (e.g. start/stop race),
+        // recover from stale "recording" state so push-to-talk works again.
+        setTimeout(() => {
+          if (!recordingSessionActive && currentState === "recording") {
+            setState("idle", "Recording cancelled");
+          }
+        }, 250);
       },
     },
     config.key,
@@ -292,6 +321,7 @@ function handleDaemonCommand(command: DaemonCommand): DaemonResponse {
 
 function gracefulShutdown() {
   logger.info("Shutting down...");
+  publishVoiceActivity(false);
   fnHook?.stop();
   piSession.dispose();
   stopDaemonServer();
