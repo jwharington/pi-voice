@@ -3,18 +3,18 @@ import { describe, test, expect, beforeEach, mock } from "bun:test";
 // Mock logger
 mock.module("../../services/logger.js", () => ({
   default: {
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
+    info: () => { },
+    warn: () => { },
+    error: () => { },
+    debug: () => { },
   },
 }));
 
 // Mock the pi coding agent
-const mockDispose = mock(() => {});
-const mockPrompt = mock(async (_text: string) => {});
+const mockDispose = mock(() => { });
+const mockPrompt = mock(async (_text: string) => { });
 const mockSubscribe = mock((_cb: any) => {
-  return () => {}; // unsubscribe
+  return () => { }; // unsubscribe
 });
 
 const mockSession = {
@@ -28,11 +28,19 @@ const mockCreateAgentSession = mock(async (_opts: any) => ({
 }));
 
 const mockSessionManagerInMemory = mock(() => ({}));
+const mockSessionManagerOpen = mock((_path: string) => ({}));
+
+const mockReadVoiceFocus = mock(() => null as { sessionFile: string } | null);
+
+mock.module("../../services/voice-focus.js", () => ({
+  readVoiceFocus: mockReadVoiceFocus,
+}));
 
 mock.module("@mariozechner/pi-coding-agent", () => ({
   createAgentSession: mockCreateAgentSession,
   SessionManager: {
     inMemory: mockSessionManagerInMemory,
+    open: mockSessionManagerOpen,
   },
 }));
 
@@ -47,6 +55,10 @@ describe("pi-session", () => {
   beforeEach(() => {
     dispose(); // reset cached session
     mockCreateAgentSession.mockClear();
+    mockSessionManagerInMemory.mockClear();
+    mockSessionManagerOpen.mockClear();
+    mockReadVoiceFocus.mockClear();
+    mockReadVoiceFocus.mockImplementation(() => null);
     mockDispose.mockClear();
     mockPrompt.mockClear();
     mockSubscribe.mockClear();
@@ -82,6 +94,19 @@ describe("pi-session", () => {
     test("uses in-memory session manager", async () => {
       await getOrCreateSession();
       expect(mockSessionManagerInMemory).toHaveBeenCalled();
+      expect(mockSessionManagerOpen).not.toHaveBeenCalled();
+    });
+
+    test("uses focused session file when voice focus exists", async () => {
+      const existingPath = `${process.cwd()}/package.json`;
+      mockReadVoiceFocus.mockImplementation(() => ({
+        sessionFile: existingPath,
+      }));
+
+      await getOrCreateSession();
+
+      expect(mockSessionManagerOpen).toHaveBeenCalledWith(existingPath);
+      expect(mockSessionManagerInMemory).not.toHaveBeenCalled();
     });
   });
 
@@ -93,7 +118,7 @@ describe("pi-session", () => {
     });
 
     test("subscribes before prompting and unsubscribes after", async () => {
-      const unsubscribeFn = mock(() => {});
+      const unsubscribeFn = mock(() => { });
       mockSubscribe.mockImplementation(() => unsubscribeFn);
 
       await prompt("test");
@@ -103,7 +128,7 @@ describe("pi-session", () => {
     });
 
     test("unsubscribes even if prompt throws", async () => {
-      const unsubscribeFn = mock(() => {});
+      const unsubscribeFn = mock(() => { });
       mockSubscribe.mockImplementation(() => unsubscribeFn);
       mockPrompt.mockImplementation(async () => {
         throw new Error("prompt failed");
@@ -113,11 +138,11 @@ describe("pi-session", () => {
       expect(unsubscribeFn).toHaveBeenCalledTimes(1);
 
       // Reset implementation
-      mockPrompt.mockImplementation(async () => {});
+      mockPrompt.mockImplementation(async () => { });
     });
 
     test("calls onTextEnd callback for text_end events", async () => {
-      const onTextEnd = mock((_s: string) => {});
+      const onTextEnd = mock((_s: string) => { });
 
       mockSubscribe.mockImplementation((cb: any) => {
         // Simulate a text_end event
@@ -128,7 +153,7 @@ describe("pi-session", () => {
             content: "Hello from pi",
           },
         });
-        return () => {};
+        return () => { };
       });
 
       await prompt("test", { onTextEnd });
@@ -136,7 +161,7 @@ describe("pi-session", () => {
     });
 
     test("skips empty content in text_end events", async () => {
-      const onTextEnd = mock((_s: string) => {});
+      const onTextEnd = mock((_s: string) => { });
 
       mockSubscribe.mockImplementation((cb: any) => {
         cb({
@@ -146,7 +171,7 @@ describe("pi-session", () => {
             content: "   ",
           },
         });
-        return () => {};
+        return () => { };
       });
 
       await prompt("test", { onTextEnd });
@@ -154,7 +179,7 @@ describe("pi-session", () => {
     });
 
     test("ignores non-text_end events", async () => {
-      const onTextEnd = mock((_s: string) => {});
+      const onTextEnd = mock((_s: string) => { });
 
       mockSubscribe.mockImplementation((cb: any) => {
         cb({
@@ -164,7 +189,7 @@ describe("pi-session", () => {
             content: "start",
           },
         });
-        return () => {};
+        return () => { };
       });
 
       await prompt("test", { onTextEnd });

@@ -62,7 +62,7 @@ You can configure pi-voice in `.pi/pi-voice.json`:
 | --- | --- |
 | `local` | None (model is auto-downloaded on first launch). Optional: `WHISPER_MODEL_PATH` (custom model path), `WHISPER_MODEL` (model name, default `medium-q5_0`), `SAY_VOICE` (macOS `say` voice name, e.g. `"Kyoko"`). |
 | `gemini` | **Vertex AI:** `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` (optional, default `us-central1`). **Gemini API:** `GEMINI_API_KEY` or `GOOGLE_API_KEY`. If `GOOGLE_CLOUD_PROJECT` is set, Vertex AI is used; set `GOOGLE_GENAI_USE_VERTEXAI=false` to force API key mode. |
-| `openai` | `OPENAI_API_KEY` |
+| `openai` | `OPENAI_API_KEY`. Optional: `OPENAI_BASE_URL` (for OpenAI-compatible servers like llama.cpp), `OPENAI_STT_MODEL` (default `whisper-1`), `OPENAI_STT_RESPONSE_FORMAT` (default `json`), `OPENAI_STT_PROMPT`, `OPENAI_STT_LANGUAGE`, `OPENAI_STT_TEMPERATURE`. |
 | `elevenlabs` | `ELEVENLABS_API_KEY`. Optional: `ELEVENLABS_VOICE_ID` (TTS voice, default `CwhRBWXzGAHq8TQ4Fs17`), `ELEVENLABS_TTS_MODEL` (default `eleven_flash_v2_5`). |
 
 #### Logging

@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 // Mock logger to prevent file I/O during tests
 mock.module("../../services/logger.js", () => ({
   default: {
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
+    info: () => { },
+    warn: () => { },
+    error: () => { },
+    debug: () => { },
   },
 }));
 
@@ -170,6 +170,7 @@ describe("loadConfig", () => {
   test("returns defaults when no config file exists", () => {
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("local");
+    expect(config.ttsEnabled).toBe(true);
     expect(config.key.meta).toBe(true);
     expect(config.key.shift).toBe(true);
     expect(config.keyDisplay.length).toBeGreaterThan(0);
@@ -185,6 +186,7 @@ describe("loadConfig", () => {
 
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("gemini");
+    expect(config.ttsEnabled).toBe(true);
     expect(config.key.ctrl).toBe(true);
   });
 
@@ -195,8 +197,22 @@ describe("loadConfig", () => {
 
     const config = loadConfig(tmpDir);
     expect(config.provider).toBe("local");
+    expect(config.ttsEnabled).toBe(true);
     expect(config.key.meta).toBe(true);
     expect(config.key.shift).toBe(true);
+  });
+
+  test("loads tts flag when provided", () => {
+    const piDir = join(tmpDir, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "pi-voice.json"),
+      JSON.stringify({ provider: "openai", tts: false }),
+    );
+
+    const config = loadConfig(tmpDir);
+    expect(config.provider).toBe("openai");
+    expect(config.ttsEnabled).toBe(false);
   });
 
   test("accepts all valid providers", () => {

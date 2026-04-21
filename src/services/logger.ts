@@ -35,7 +35,7 @@ const logger = pino(
     // File output (JSON, auto-creates parent directories)
     {
       level: "debug",
-      stream: pino.destination({ dest: logPath, mkdir: true, sync: false }),
+      stream: pino.destination({ dest: logPath, mkdir: true, sync: true }),
     },
   ]),
 );

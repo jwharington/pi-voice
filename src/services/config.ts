@@ -26,6 +26,8 @@ export interface PiVoiceConfig {
   keyDisplay: string;
   /** Speech provider for STT & TTS (default: "gemini") */
   provider: SpeechProvider;
+  /** Whether to synthesize spoken output (default: true) */
+  ttsEnabled: boolean;
 }
 
 // ── Key name → UiohookKey mapping ────────────────────────────────────
@@ -203,6 +205,7 @@ function defaultConfig(): PiVoiceConfig {
     key: binding,
     keyDisplay: formatKeyDisplay(binding),
     provider: DEFAULT_PROVIDER,
+    ttsEnabled: true,
   };
 }
 
@@ -225,6 +228,7 @@ const configFileSchema = z.object({
     .optional()
     .default(DEFAULT_KEY_STRING),
   provider: z.enum(["local", "gemini", "openai", "elevenlabs"]).optional().default(DEFAULT_PROVIDER),
+  tts: z.boolean().optional().default(true),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -286,6 +290,14 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   const binding = parseKeyBinding(parsed.key);
   const display = formatKeyDisplay(binding);
 
-  logger.info({ key: display, provider: parsed.provider, configPath }, "Loaded config");
-  return { key: binding, keyDisplay: display, provider: parsed.provider };
+  logger.info(
+    { key: display, provider: parsed.provider, tts: parsed.tts, configPath },
+    "Loaded config",
+  );
+  return {
+    key: binding,
+    keyDisplay: display,
+    provider: parsed.provider,
+    ttsEnabled: parsed.tts,
+  };
 }

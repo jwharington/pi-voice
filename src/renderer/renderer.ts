@@ -13,6 +13,9 @@ import { downsample } from "../shared/audio-utils.js";
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let audioContext: AudioContext | null = null;
+let recordingTimeoutId: number | null = null;
+
+const MAX_RECORDING_MS = 30_000;
 
 // ── PCM recording state ──────────────────────────────────────────────
 let pcmStream: MediaStream | null = null;
@@ -109,6 +112,10 @@ function startPcmRecording(stream: MediaStream) {
 }
 
 function stopPcmRecording() {
+  if (!pcmRecording && !pcmProcessorNode && !pcmStream) {
+    return;
+  }
+
   pcmRecording = false;
 
   pcmProcessorNode?.disconnect();
@@ -145,6 +152,27 @@ function stopPcmRecording() {
   pcmStream = null;
 }
 
+function clearRecordingTimeout() {
+  if (recordingTimeoutId !== null) {
+    clearTimeout(recordingTimeoutId);
+    recordingTimeoutId = null;
+  }
+}
+
+function stopCurrentRecording(playToggleSound: boolean) {
+  clearRecordingTimeout();
+
+  if (playToggleSound) {
+    playSoundEffect(toggleOffUrl);
+  }
+
+  if (currentRecordingFormat === "pcm") {
+    stopPcmRecording();
+  } else {
+    stopWebmRecording();
+  }
+}
+
 // ── Recording control from main ──────────────────────────────────────
 
 let currentRecordingFormat: "webm" | "pcm" = "webm";
@@ -152,6 +180,11 @@ let currentRecordingFormat: "webm" | "pcm" = "webm";
 window.piVoice.onStartRecording(async (format) => {
   playSoundEffect(toggleOnUrl);
   currentRecordingFormat = format;
+  clearRecordingTimeout();
+
+  recordingTimeoutId = window.setTimeout(() => {
+    stopCurrentRecording(true);
+  }, MAX_RECORDING_MS);
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -168,13 +201,7 @@ window.piVoice.onStartRecording(async (format) => {
 });
 
 window.piVoice.onStopRecording(() => {
-  playSoundEffect(toggleOffUrl);
-
-  if (currentRecordingFormat === "pcm") {
-    stopPcmRecording();
-  } else {
-    stopWebmRecording();
-  }
+  stopCurrentRecording(true);
 });
 
 // ── Streaming PCM playback ──────────────────────────────────────────

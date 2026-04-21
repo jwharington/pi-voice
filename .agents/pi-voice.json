@@ -1,3 +1,4 @@
 {
-  "provider": "elevenlabs"
+  "provider": "openai",
+  "tts": false
 }

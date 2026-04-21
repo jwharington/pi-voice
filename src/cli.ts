@@ -15,27 +15,34 @@ import {
 import { sendCommand } from "./services/daemon-ipc.js";
 import { loadConfig, ConfigError } from "./services/config.js";
 import { resolveModelPath } from "./services/whisper-model.js";
+import { getVoiceFocusPath, readVoiceFocus } from "./services/voice-focus.js";
 
-type Command = "start" | "status" | "stop";
+type Command = "start" | "status" | "stop" | "focus";
 
-function usage(): never {
+function usage(exitCode = 0): void {
   console.log(`Usage: pi-voice <command>
 
 Commands:
   start   Start the pi-voice daemon in the background (default)
   status  Show daemon status (state, PID, uptime)
-  stop    Stop the running daemon`);
-  process.exit(0);
+  stop    Stop the running daemon
+  focus   Show current /voice routing target`);
+  process.exitCode = exitCode;
 }
 
-function parseCommand(): Command {
+function parseCommand(): Command | null {
   const arg = process.argv[2];
   if (!arg || arg === "start") return "start";
   if (arg === "status") return "status";
   if (arg === "stop") return "stop";
-  if (arg === "--help" || arg === "-h") usage();
+  if (arg === "focus") return "focus";
+  if (arg === "--help" || arg === "-h") {
+    usage();
+    return null;
+  }
   console.error(`Unknown command: ${arg}`);
-  usage();
+  usage(1);
+  return null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -77,6 +84,12 @@ async function cmdStatus(): Promise<void> {
       console.log(
         `running: ${res.cwd} (pid: ${res.pid}, state: ${res.state}, uptime: ${uptime}s)`
       );
+      if (typeof res.lastTranscript === "string" && res.lastTranscript.trim().length > 0) {
+        console.log(`  last transcript: ${res.lastTranscript}`);
+      }
+      if (typeof res.lastResponse === "string" && res.lastResponse.trim().length > 0) {
+        console.log(`  last response: ${res.lastResponse}`);
+      }
     } else {
       console.log(
         `running: ${state.cwd} (pid: ${state.pid}, since: ${state.startedAt})`
@@ -119,6 +132,25 @@ async function cmdStop(): Promise<void> {
       }
     }
   }
+}
+
+// ── focus ───────────────────────────────────────────────────────────
+function cmdFocus(): void {
+  const focus = readVoiceFocus();
+  const focusPath = getVoiceFocusPath();
+
+  if (!focus) {
+    console.log("voice focus: none");
+    console.log(`  file: ${focusPath}`);
+    console.log("  claim focus from a pi terminal by running: /voice");
+    return;
+  }
+
+  console.log("voice focus: claimed");
+  console.log(`  session file: ${focus.sessionFile}`);
+  if (focus.cwd) console.log(`  cwd: ${focus.cwd}`);
+  if (focus.claimedAt) console.log(`  claimed at: ${focus.claimedAt}`);
+  console.log(`  file: ${focusPath}`);
 }
 
 // ── start ───────────────────────────────────────────────────────────
@@ -190,20 +222,33 @@ async function cmdStart(): Promise<void> {
   });
   child.unref();
 
+  // Wait for the daemon to write its PID file (up to 5s) before returning,
+  // so that an immediate `pi-voice status` call reliably shows "running".
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 200));
+    if (readRuntimeState() !== null) break;
+  }
+
   console.log(`pi-voice daemon started (pid: ${child.pid}, cwd: ${cwd})`);
   console.log(`  key: ${config.keyDisplay}, provider: ${config.provider}`);
 }
 
 // ── main ────────────────────────────────────────────────────────────
 const command = parseCommand();
-switch (command) {
-  case "start":
-    await cmdStart();
-    break;
-  case "status":
-    await cmdStatus();
-    break;
-  case "stop":
-    await cmdStop();
-    break;
+if (command) {
+  switch (command) {
+    case "start":
+      await cmdStart();
+      break;
+    case "status":
+      await cmdStatus();
+      break;
+    case "stop":
+      await cmdStop();
+      break;
+    case "focus":
+      cmdFocus();
+      break;
+  }
 }

@@ -3,10 +3,28 @@ import {
   SessionManager,
   type AgentSession,
 } from "@mariozechner/pi-coding-agent";
+import { existsSync } from "node:fs";
 import logger from "./logger.js";
+import { readVoiceFocus } from "./voice-focus.js";
 
 let session: AgentSession | null = null;
+let sessionKey = "";
 let sessionCwd: string = process.cwd();
+
+function resolveSessionTarget():
+  | { key: string; mode: "in-memory" }
+  | { key: string; mode: "file"; sessionFile: string } {
+  const focus = readVoiceFocus();
+  if (focus?.sessionFile && existsSync(focus.sessionFile)) {
+    return {
+      key: `file:${focus.sessionFile}`,
+      mode: "file",
+      sessionFile: focus.sessionFile,
+    };
+  }
+
+  return { key: "in-memory", mode: "in-memory" };
+}
 
 /**
  * Set the working directory used when creating the agent session.
@@ -21,14 +39,26 @@ export function setSessionCwd(cwd: string): void {
  * Uses default discovery for skills, extensions, tools, context files.
  */
 export async function getOrCreateSession(): Promise<AgentSession> {
-  if (session) return session;
+  const target = resolveSessionTarget();
+  if (session && sessionKey === target.key) return session;
 
-  logger.info({ cwd: sessionCwd }, "Creating new agent session");
+  if (session && sessionKey !== target.key) {
+    logger.info({ from: sessionKey, to: target.key }, "Switching agent session target");
+    session.dispose();
+    session = null;
+    sessionKey = "";
+  }
+
+  logger.info({ cwd: sessionCwd, mode: target.mode }, "Creating new agent session");
   const result = await createAgentSession({
     cwd: sessionCwd,
-    sessionManager: SessionManager.inMemory(),
+    sessionManager:
+      target.mode === "file"
+        ? SessionManager.open(target.sessionFile)
+        : SessionManager.inMemory(),
   });
   session = result.session;
+  sessionKey = target.key;
   logger.info("Agent session created");
   return session;
 }
@@ -76,6 +106,7 @@ export function dispose(): void {
   if (session) {
     session.dispose();
     session = null;
+    sessionKey = "";
     logger.info("Agent session disposed");
   }
 }

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
 import { FnHook } from "./services/fn-hook.js";
-import { loadConfig, ConfigError, type SpeechProvider } from "./services/config.js";
+import { loadConfig, ConfigError, type PiVoiceConfig } from "./services/config.js";
 import { transcribe } from "./services/stt.js";
 import {
   synthesizeStream,
@@ -24,6 +24,7 @@ import {
 } from "./services/daemon-ipc.js";
 import { resolveModelPath } from "./services/whisper-model.js";
 import logger from "./services/logger.js";
+import { publishVoiceDraft } from "./services/voice-focus.js";
 
 // ── Resolve working directory ───────────────────────────────────────
 // CLI passes the caller's cwd via PI_VOICE_CWD env variable.
@@ -32,6 +33,8 @@ const workingCwd = process.env["PI_VOICE_CWD"] || process.cwd();
 let mainWindow: BrowserWindow | null = null;
 let fnHook: FnHook | null = null;
 let currentState: AppState = "idle";
+let lastTranscript = "";
+let lastResponse = "";
 
 // Tell pi-session to use the caller's cwd
 piSession.setSessionCwd(workingCwd);
@@ -72,7 +75,9 @@ function createWindow() {
   });
 }
 
-function setupIpcHandlers(provider: SpeechProvider) {
+function setupIpcHandlers(config: PiVoiceConfig) {
+  const provider = config.provider;
+  const ttsEnabled = config.ttsEnabled;
   // Receive recording data from renderer
   ipcMain.on(IPC.RECORDING_DATA, async (_event, data: ArrayBuffer) => {
     if (currentState !== "recording") return;
@@ -88,6 +93,7 @@ function setupIpcHandlers(provider: SpeechProvider) {
       // Step 1: Transcribe
       setState("transcribing", "Transcribing...");
       const text = await transcribe(data, provider);
+      lastTranscript = text;
 
       if (!text) {
         setState("idle", "No speech detected");
@@ -96,6 +102,36 @@ function setupIpcHandlers(provider: SpeechProvider) {
 
       // Step 2: Send to pi – start TTS as each text segment completes
       setState("thinking", `Sent: "${text}"`);
+
+      if (!ttsEnabled) {
+        // Text-only mode: if a /voice terminal has focus, inject transcript
+        // into that terminal's editor buffer (without submitting).
+        const focus = publishVoiceDraft(text);
+        if (focus) {
+          lastResponse = "";
+          setState("idle", "Inserted transcript into focused pi terminal");
+          return;
+        }
+
+        // Fallback when no /voice focus exists: send to internal agent session.
+        const responseParts: string[] = [];
+        await piSession.prompt(text, {
+          onTextEnd: (segment) => {
+            responseParts.push(segment);
+            lastResponse = responseParts.join("\n");
+          },
+        });
+
+        if (lastResponse.trim().length > 0) {
+          const preview = lastResponse.length > 100
+            ? `${lastResponse.slice(0, 100)}...`
+            : lastResponse;
+          setState("idle", `Response: ${preview}`);
+        } else {
+          setState("idle", "No response from pi");
+        }
+        return;
+      }
 
       if (provider === "local") {
         // Local TTS: say command plays directly through system audio
@@ -185,7 +221,13 @@ function setupIpcHandlers(provider: SpeechProvider) {
 }
 
 function setupFnHook(config: ReturnType<typeof loadConfig>) {
-  const recordingFormat: RecordingFormat = config.provider === "local" ? "pcm" : "webm";
+  // OpenAI-compatible servers (e.g. llama.cpp) can reject WebM uploads.
+  // Use raw PCM capture for both local and OpenAI providers, then encode
+  // to WAV in the STT layer for maximum compatibility.
+  const recordingFormat: RecordingFormat =
+    config.provider === "local" || config.provider === "openai"
+      ? "pcm"
+      : "webm";
 
   fnHook = new FnHook(
     {
@@ -230,6 +272,8 @@ function handleDaemonCommand(command: DaemonCommand): DaemonResponse {
         cwd: workingCwd,
         pid: process.pid,
         uptime: process.uptime(),
+        lastTranscript,
+        lastResponse,
       };
 
     case "stop":
@@ -295,7 +339,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
-  setupIpcHandlers(config.provider);
+  setupIpcHandlers(config);
   setupFnHook(config);
 
   // Start daemon IPC server
