@@ -1,60 +1,74 @@
 # pi-voice
 
-Headless voice interface for the [Pi Coding Agent](https://github.com/badlogic/pi-mono). Hold a key, speak, and pi executes your instructions with voice feedback.
+Voice interface for the [Pi Coding Agent](https://github.com/badlogic/pi-mono). Toggle recording with a shortcut, speak, and pi executes your instructions — optionally with voice feedback.
 
 #### Demo using ElevenLabs provider (make sure unmuted)
 
 https://github.com/user-attachments/assets/76adb941-83cf-4394-b8d2-f6d73a1df8bc
 
+## Requirements
+
+- [pi coding agent](https://github.com/badlogic/pi-mono) (peer dependency)
+- [`sox`](http://sox.sourceforge.net/) — for microphone capture and PCM playback
+  - macOS: `brew install sox`
+  - Linux: `apt install sox` / `dnf install sox`
+
 ## Installation
 
+Install pi-voice as a pi package:
+
 ```bash
-npm i -g pi-voice
-# or
-bun i -g pi-voice
+pi install npm:pi-voice
+```
+
+Or for a specific project only, add it to `.pi/pi-voice.json` and install locally:
+
+```bash
+cd /your/project
+pi install npm:pi-voice
 ```
 
 ## Usage
 
-pi-voice is a daemon-style application that runs in the background once started. You can push-to-talk with the agent.
+pi-voice runs entirely inside pi — no background daemon needed. Once installed, a push-to-talk shortcut is available whenever pi is running.
 
-```bash
-pi-voice start    # start the daemon in the background
-pi-voice status   # show state, PID, and uptime
-pi-voice stop     # stop the daemon
-```
+1. Press and hold the shortcut (default `f12`) to **start** recording. A spinner and VU meter appear in the status bar.
+2. Release the shortcut to **stop** recording. The transcript is sent to the active pi session.
+3. On terminals without key-release events, pi-voice falls back to press-to-toggle behavior.
+3. pi-voice plays a short click when recording starts and another when recording stops.
+4. If TTS is enabled, pi-voice speaks the agent's response back to you when the turn completes.
 
-The push-to-talk trigger defaults to `Cmd+Shift+I` (macOS) / `Win+Shift+I` (Windows). Hold the key to record, release to send.
+### Commands
 
-## Setting
+| Command | Description |
+| --- | --- |
+| `/voice` | Show current pi-voice status and configuration |
+| `/voice stop` | Cancel an in-progress recording |
+| `/voice config` | Print the resolved configuration |
+| `/voice enable` | Enable voice hotkey handling |
+| `/voice disable` | Disable voice hotkey handling |
+| `/voice set <shortcut\|provider\|tts\|enabled> <value>` | Edit and persist pi-voice settings |
+| `/voice set shortcut <value>` | Update shortcut (restart pi to rebind) |
 
-### pi agent configuration
+## Configuration
 
-pi-voice launches a Pi agent session with the directory where `pi-voice start` was executed. This means **all standard pi configuration works as-is**:
-
-- `AGENTS.md` — walked up from `cwd` to the filesystem root
-- `.pi/settings.json` — project-level settings
-- `.pi/skills/`, `.pi/extensions/`, `.pi/prompts/` — project-level resources
-- `~/.pi/agent/` — global settings, skills, extensions, prompts, and models
-- and more
-
-Refer to the [Pi documentation](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) for details on these settings.
-
-### pi-voice configuration
-
-You can configure pi-voice in `.pi/pi-voice.json`:
+Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.json` (global fallback):
 
 ```json
 {
-  "key": "ctrl+t",
-  "provider": "local"
+  "shortcut": "f12",
+  "provider": "openai",
+  "enabled": true,
+  "tts": true
 }
 ```
 
 | Key | Description |
 | --- | --- |
-| `key` | Push-to-talk shortcut. Combine modifiers (`ctrl`, `shift`, `alt`/`opt`, `meta`/`cmd`) and a main key with `+`. Examples: `"ctrl+t"`, `"alt+space"`, `"ctrl+shift+r"`. Default: `"meta+shift+i"`. |
+| `shortcut` | Toggle-to-record shortcut. Use a supported key or modifier combo. Examples: `"f12"`, `"ctrl+t"`, `"alt+space"`. Default: `"f12"`. |
 | `provider` | Speech provider for STT & TTS. `"local"`, `"gemini"` (Vertex AI or Gemini API), `"openai"`, or `"elevenlabs"`. Default: `"local"`. |
+| `enabled` | Enables or disables voice shortcut handling. Default: `true`. |
+| `tts` | Enable text-to-speech for agent responses. Default: `false`. |
 
 ### Environment variables
 
@@ -65,9 +79,9 @@ You can configure pi-voice in `.pi/pi-voice.json`:
 | `openai` | `OPENAI_API_KEY`. Optional: `OPENAI_BASE_URL` (for OpenAI-compatible servers like llama.cpp), `OPENAI_STT_MODEL` (default `whisper-1`), `OPENAI_STT_RESPONSE_FORMAT` (default `json`), `OPENAI_STT_PROMPT`, `OPENAI_STT_LANGUAGE`, `OPENAI_STT_TEMPERATURE`. |
 | `elevenlabs` | `ELEVENLABS_API_KEY`. Optional: `ELEVENLABS_VOICE_ID` (TTS voice, default `CwhRBWXzGAHq8TQ4Fs17`), `ELEVENLABS_TTS_MODEL` (default `eleven_flash_v2_5`). |
 
-#### Logging
+### Logging
 
-The daemon writes structured JSON logs to both the console and a log file. The default log file path is `$XDG_CONFIG_HOME/pi-voice/daemon.log` (falls back to `~/.config/pi-voice/daemon.log`).
+Logs are written to `$XDG_CONFIG_HOME/pi-voice/pi-voice.log` (falls back to `~/.config/pi-voice/pi-voice.log`).
 
 To override the log file path:
 
@@ -75,9 +89,9 @@ To override the log file path:
 export PI_VOICE_LOG_PATH=/path/to/custom.log
 ```
 
-#### Whisper model (local provider)
+### Whisper model (local provider)
 
-The `local` provider uses [Whisper](https://github.com/openai/whisper) for STT and the macOS `say` command for TTS. On first launch, a ggml-format Whisper model (`medium-q5_0`, ~514 MB) is automatically downloaded to `~/.pi-agent/whisper/` and cached for subsequent runs.
+The `local` provider uses [Whisper](https://github.com/openai/whisper) for STT and the `sox` play command for TTS playback. On first launch, a ggml-format Whisper model (`medium-q5_0`, ~514 MB) is automatically downloaded to `~/.pi-agent/whisper/` and cached for subsequent runs.
 
 To use a different model, set `WHISPER_MODEL`:
 

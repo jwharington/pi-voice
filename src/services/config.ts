@@ -1,255 +1,58 @@
 import { dirname, join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { UiohookKey } from "uiohook-napi";
 import { z } from "zod";
 import logger from "./logger.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export interface KeyBinding {
-  /** Main key code (UiohookKey value) */
-  keycode: number;
-  /** Modifier flags */
-  ctrl: boolean;
-  shift: boolean;
-  alt: boolean;
-  meta: boolean;
-}
-
 /** Supported speech provider */
 export type SpeechProvider = "local" | "gemini" | "openai" | "elevenlabs";
 
 export interface PiVoiceConfig {
-  /** Key binding for push-to-talk (e.g. "ctrl+t", "meta+shift+i") */
-  key: KeyBinding;
-  /** Original key string for display (e.g. "meta+shift+i") */
-  keyDisplay: string;
-  /** Speech provider for STT & TTS (default: "gemini") */
+  /**
+  * Pi in-app shortcut string for toggle-to-record (e.g. "f12").
+   * Passed directly to pi.registerShortcut().
+   */
+  shortcut: string;
+  /** Speech provider for STT & TTS (default: "local") */
   provider: SpeechProvider;
+  /** Whether voice hotkey handling is enabled (default: true) */
+  enabled: boolean;
   /** Whether to synthesize spoken output (default: true) */
   ttsEnabled: boolean;
-  /** Recording rollover interval in ms for continuous chunking (default: 30000) */
-  recordingChunkMs: number;
-  /** Crossover click peak gain (default: 0.02) */
-  rolloverClickGain: number;
-}
-
-// ── Key name → UiohookKey mapping ────────────────────────────────────
-
-const KEY_MAP: Record<string, number> = {
-  // Letters
-  a: UiohookKey.A,
-  b: UiohookKey.B,
-  c: UiohookKey.C,
-  d: UiohookKey.D,
-  e: UiohookKey.E,
-  f: UiohookKey.F,
-  g: UiohookKey.G,
-  h: UiohookKey.H,
-  i: UiohookKey.I,
-  j: UiohookKey.J,
-  k: UiohookKey.K,
-  l: UiohookKey.L,
-  m: UiohookKey.M,
-  n: UiohookKey.N,
-  o: UiohookKey.O,
-  p: UiohookKey.P,
-  q: UiohookKey.Q,
-  r: UiohookKey.R,
-  s: UiohookKey.S,
-  t: UiohookKey.T,
-  u: UiohookKey.U,
-  v: UiohookKey.V,
-  w: UiohookKey.W,
-  x: UiohookKey.X,
-  y: UiohookKey.Y,
-  z: UiohookKey.Z,
-
-  // Numbers
-  "0": UiohookKey[0],
-  "1": UiohookKey[1],
-  "2": UiohookKey[2],
-  "3": UiohookKey[3],
-  "4": UiohookKey[4],
-  "5": UiohookKey[5],
-  "6": UiohookKey[6],
-  "7": UiohookKey[7],
-  "8": UiohookKey[8],
-  "9": UiohookKey[9],
-
-  // Function keys
-  f1: UiohookKey.F1,
-  f2: UiohookKey.F2,
-  f3: UiohookKey.F3,
-  f4: UiohookKey.F4,
-  f5: UiohookKey.F5,
-  f6: UiohookKey.F6,
-  f7: UiohookKey.F7,
-  f8: UiohookKey.F8,
-  f9: UiohookKey.F9,
-  f10: UiohookKey.F10,
-  f11: UiohookKey.F11,
-  f12: UiohookKey.F12,
-  f13: UiohookKey.F13,
-  f14: UiohookKey.F14,
-  f15: UiohookKey.F15,
-  f16: UiohookKey.F16,
-  f17: UiohookKey.F17,
-  f18: UiohookKey.F18,
-  f19: UiohookKey.F19,
-  f20: UiohookKey.F20,
-  f21: UiohookKey.F21,
-  f22: UiohookKey.F22,
-  f23: UiohookKey.F23,
-  f24: UiohookKey.F24,
-
-  // Special keys
-  space: UiohookKey.Space,
-  enter: UiohookKey.Enter,
-  return: UiohookKey.Enter,
-  escape: UiohookKey.Escape,
-  esc: UiohookKey.Escape,
-  tab: UiohookKey.Tab,
-  backspace: UiohookKey.Backspace,
-  delete: UiohookKey.Delete,
-  insert: UiohookKey.Insert,
-  home: UiohookKey.Home,
-  end: UiohookKey.End,
-  pageup: UiohookKey.PageUp,
-  pagedown: UiohookKey.PageDown,
-
-  // Arrow keys
-  up: UiohookKey.ArrowUp,
-  down: UiohookKey.ArrowDown,
-  left: UiohookKey.ArrowLeft,
-  right: UiohookKey.ArrowRight,
-  arrowup: UiohookKey.ArrowUp,
-  arrowdown: UiohookKey.ArrowDown,
-  arrowleft: UiohookKey.ArrowLeft,
-  arrowright: UiohookKey.ArrowRight,
-
-  // Punctuation
-  semicolon: UiohookKey.Semicolon,
-  equal: UiohookKey.Equal,
-  comma: UiohookKey.Comma,
-  minus: UiohookKey.Minus,
-  period: UiohookKey.Period,
-  slash: UiohookKey.Slash,
-  backquote: UiohookKey.Backquote,
-  bracketleft: UiohookKey.BracketLeft,
-  backslash: UiohookKey.Backslash,
-  bracketright: UiohookKey.BracketRight,
-  quote: UiohookKey.Quote,
-};
-
-/** Modifier names recognized in key strings */
-const MODIFIER_NAMES = new Set(["ctrl", "control", "shift", "alt", "opt", "option", "meta", "cmd", "command", "super", "win"]);
-
-/**
- * Parse a key binding string like "ctrl+t" or "meta+shift+i" into a KeyBinding.
- * Throws if the string is invalid.
- */
-export function parseKeyBinding(keyStr: string): KeyBinding {
-  const parts = keyStr.toLowerCase().split("+").map((s) => s.trim());
-  if (parts.length === 0 || parts.some((p) => p === "")) {
-    throw new Error(`Invalid key binding: "${keyStr}"`);
-  }
-
-  let ctrl = false;
-  let shift = false;
-  let alt = false;
-  let meta = false;
-  let mainKey: string | undefined;
-
-  for (const part of parts) {
-    if (part === "ctrl" || part === "control") {
-      ctrl = true;
-    } else if (part === "shift") {
-      shift = true;
-    } else if (part === "alt" || part === "opt" || part === "option") {
-      alt = true;
-    } else if (part === "meta" || part === "cmd" || part === "command" || part === "super" || part === "win") {
-      meta = true;
-    } else {
-      if (mainKey !== undefined) {
-        throw new Error(`Multiple main keys in key binding: "${keyStr}"`);
-      }
-      mainKey = part;
-    }
-  }
-
-  if (mainKey === undefined) {
-    throw new Error(`No main key specified in key binding: "${keyStr}"`);
-  }
-
-  const keycode = KEY_MAP[mainKey];
-  if (keycode === undefined) {
-    throw new Error(`Unknown key "${mainKey}" in key binding: "${keyStr}"`);
-  }
-
-  return { keycode, ctrl, shift, alt, meta };
-}
-
-/**
- * Format a KeyBinding into a human-readable display string.
- * Uses macOS symbols when on macOS, otherwise text labels.
- */
-export function formatKeyDisplay(binding: KeyBinding): string {
-  const isMac = process.platform === "darwin";
-  const parts: string[] = [];
-
-  if (binding.ctrl) parts.push(isMac ? "\u2303" : "Ctrl");
-  if (binding.alt) parts.push(isMac ? "\u2325" : "Alt");
-  if (binding.shift) parts.push(isMac ? "\u21E7" : "Shift");
-  if (binding.meta) parts.push(isMac ? "\u2318" : "Win");
-
-  // Reverse lookup main key name
-  const keyName = Object.entries(KEY_MAP).find(([, v]) => v === binding.keycode)?.[0]?.toUpperCase() ?? "?";
-  parts.push(keyName);
-
-  return parts.join(isMac ? "" : "+");
+  /** Optional STT model override for the openai provider (fallback: OPENAI_STT_MODEL env → "whisper-1") */
+  sttModel?: string;
 }
 
 // ── Default config ───────────────────────────────────────────────────
 
-const DEFAULT_KEY_STRING = "meta+shift+i";
+const DEFAULT_SHORTCUT = "f12";
 const DEFAULT_PROVIDER: SpeechProvider = "local";
 
 function defaultConfig(): PiVoiceConfig {
-  const binding = parseKeyBinding(DEFAULT_KEY_STRING);
   return {
-    key: binding,
-    keyDisplay: formatKeyDisplay(binding),
+    shortcut: DEFAULT_SHORTCUT,
     provider: DEFAULT_PROVIDER,
+    enabled: true,
     ttsEnabled: true,
-    recordingChunkMs: 30000,
-    rolloverClickGain: 0.005,
   };
 }
 
 // ── Zod schema for pi-voice.json ─────────────────────────────────────
 
 const configFileSchema = z.object({
-  key: z
-    .string()
-    .refine(
-      (v) => {
-        try {
-          parseKeyBinding(v);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      { message: "Invalid key binding" },
-    )
-    .optional()
-    .default(DEFAULT_KEY_STRING),
+  /** New field – plain shortcut string for pi.registerShortcut() */
+  shortcut: z.string().min(1).optional(),
+  /**
+   * Legacy field from the daemon era ("meta+shift+i" style).
+   * Accepted for backward-compatibility; `shortcut` takes precedence when both are present.
+   */
+  key: z.string().min(1).optional(),
   provider: z.enum(["local", "gemini", "openai", "elevenlabs"]).optional().default(DEFAULT_PROVIDER),
+  enabled: z.boolean().optional().default(true),
   tts: z.boolean().optional().default(true),
-  recordingChunkMs: z.number().int().min(5000).max(300000).optional().default(30000),
-  rolloverClickGain: z.number().min(0).max(0.2).optional().default(0.005),
+  sttModel: z.string().min(1).optional(),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -304,6 +107,19 @@ function resolveConfigPath(cwd: string): string | undefined {
   }
 }
 
+/** Returns the currently active config path if one exists. */
+export function getExistingConfigPath(cwd: string): string | undefined {
+  return resolveConfigPath(cwd);
+}
+
+/**
+ * Returns the path that should be used for writes from commands.
+ * If no config exists yet, we create a project-local config at `<cwd>/.pi/pi-voice.json`.
+ */
+export function getEditableConfigPath(cwd: string): string {
+  return resolveConfigPath(cwd) ?? join(resolve(cwd), ".pi", "pi-voice.json");
+}
+
 /**
  * Load config from nearest ascendant `.pi/pi-voice.json`.
  * Falls back to `~/.pi/pi-voice.json`, then defaults if missing.
@@ -345,26 +161,56 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   }
 
   const parsed = result.data;
-  const binding = parseKeyBinding(parsed.key);
-  const display = formatKeyDisplay(binding);
+  // `shortcut` (new field) takes precedence; fall back to legacy `key` field,
+  // then the hard-coded default. This ensures old configs keep working.
+  const shortcut = parsed.shortcut ?? parsed.key ?? DEFAULT_SHORTCUT;
 
-  logger.info(
+  logger.debug(
     {
-      key: display,
+      shortcut,
       provider: parsed.provider,
+      enabled: parsed.enabled,
       tts: parsed.tts,
-      recordingChunkMs: parsed.recordingChunkMs,
-      rolloverClickGain: parsed.rolloverClickGain,
       configPath,
     },
     "Loaded config",
   );
   return {
-    key: binding,
-    keyDisplay: display,
+    shortcut,
     provider: parsed.provider,
+    enabled: parsed.enabled,
     ttsEnabled: parsed.tts,
-    recordingChunkMs: parsed.recordingChunkMs,
-    rolloverClickGain: parsed.rolloverClickGain,
+    ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
   };
+}
+
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "sttModel">>;
+
+/**
+ * Persist partial config updates and return the merged effective config.
+ * Creates `<cwd>/.pi/pi-voice.json` when no config exists yet.
+ */
+export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
+  const configPath = getEditableConfigPath(cwd);
+  const current = loadConfig(cwd);
+  const next: PiVoiceConfig = {
+    ...current,
+    ...patch,
+  };
+
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({
+      shortcut: next.shortcut,
+      provider: next.provider,
+      enabled: next.enabled,
+      tts: next.ttsEnabled,
+      ...(next.sttModel ? { sttModel: next.sttModel } : {}),
+    }, null, 2)}\n`,
+    "utf-8",
+  );
+
+  logger.info({ configPath }, "Updated pi-voice config");
+  return next;
 }

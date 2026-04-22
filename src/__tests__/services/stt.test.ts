@@ -204,7 +204,7 @@ describe("transcribe", () => {
     const content = calls[0]![0].contents[0].parts;
     // Should have inlineData and text parts
     expect(content.length).toBe(2);
-    expect(content[0].inlineData.mimeType).toBe("audio/webm");
+    expect(content[0].inlineData.mimeType).toBe("audio/wav");
     expect(typeof content[0].inlineData.data).toBe("string"); // base64
   });
 

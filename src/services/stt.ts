@@ -11,7 +11,14 @@ let openaiClient: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
   if (openaiClient) return openaiClient;
-  const apiKey = process.env.OPENAI_API_KEY;
+  const baseURL = process.env.OPENAI_BASE_URL;
+  const isLocalhost =
+    baseURL !== undefined &&
+    (baseURL.startsWith("http://localhost") ||
+      baseURL.startsWith("http://127.0.0.1") ||
+      baseURL.startsWith("https://localhost") ||
+      baseURL.startsWith("https://127.0.0.1"));
+  const apiKey = process.env.OPENAI_API_KEY ?? (isLocalhost ? "sk-test" : undefined);
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
@@ -60,7 +67,7 @@ async function transcribeGemini(audioBuffer: Buffer): Promise<string> {
         parts: [
           {
             inlineData: {
-              mimeType: "audio/webm",
+              mimeType: "audio/wav",
               data: base64Audio,
             },
           },
@@ -164,12 +171,12 @@ function getOpenAISttTemperature(): number | undefined {
   return parsed;
 }
 
-async function transcribeOpenAI(samples: Float32Array): Promise<string> {
+async function transcribeOpenAI(samples: Float32Array, sttModelOverride?: string): Promise<string> {
   const client = getOpenAIClient();
 
   const wavBuffer = pcmFloat32ToWav(samples);
   const file = await toFile(wavBuffer, "recording.wav");
-  const model = process.env.OPENAI_STT_MODEL ?? DEFAULT_OPENAI_STT_MODEL;
+  const model = sttModelOverride ?? process.env.OPENAI_STT_MODEL ?? DEFAULT_OPENAI_STT_MODEL;
   const language = process.env.OPENAI_STT_LANGUAGE;
   const prompt = process.env.OPENAI_STT_PROMPT;
   const temperature = getOpenAISttTemperature();
@@ -212,8 +219,8 @@ async function transcribeElevenLabs(audioBuffer: Buffer): Promise<string> {
   const result = await client.speechToText.convert({
     file: {
       data: audioBuffer,
-      filename: "recording.webm",
-      contentType: "audio/webm",
+      filename: "recording.wav",
+      contentType: "audio/wav",
     },
     modelId: "scribe_v2",
   });
@@ -260,43 +267,86 @@ async function transcribeLocal(samples: Float32Array): Promise<string> {
   return instance.full(params, samples);
 }
 
+// ── WAV utilities ────────────────────────────────────────────────────
+
+/**
+ * Convert a raw 16kHz 16-bit signed little-endian mono PCM buffer to
+ * a Float32Array in the range [-1, 1] suitable for Whisper / OpenAI.
+ */
+function pcmInt16ToFloat32(pcm: Buffer): Float32Array {
+  const samples = new Float32Array(pcm.length / 2);
+  for (let i = 0; i < samples.length; i++) {
+    samples[i] = pcm.readInt16LE(i * 2) / 32768.0;
+  }
+  return samples;
+}
+
+/**
+ * Wrap a raw PCM buffer in a WAV container.
+ * Assumes 16kHz, 16-bit, mono, little-endian signed integer PCM.
+ */
+export function pcmInt16ToWav(pcm: Buffer, sampleRate = 16000): Buffer {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const dataSize = pcm.length;
+  const header = Buffer.alloc(44);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);               // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  header.writeUInt16LE(channels * bytesPerSample, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcm]);
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
- * Transcribe audio data to text using the configured speech provider.
+ * Transcribe audio to text.
  *
- * For "local" provider, `audioData` should be an ArrayBuffer containing
- * 16kHz mono Float32 PCM (sent from renderer in PCM recording mode).
+ * `audioData` must be a raw 16kHz 16-bit signed little-endian mono PCM
+ * buffer as produced by sox (`rec -r 16000 -e signed-integer -b 16 -c 1
+ * -L -t raw`).
  *
- * For OpenAI provider, `audioData` should be 16kHz mono Float32 PCM
- * (captured in PCM mode and encoded to WAV before upload).
- *
- * For Gemini/ElevenLabs providers, `audioData` should be an ArrayBuffer
- * containing WebM/Opus audio (from MediaRecorder).
+ * The function converts internally to the format required by each provider:
+ * - local / openai : Float32 samples
+ * - gemini / elevenlabs : WAV container sent as audio/wav
  */
 export async function transcribe(
   audioData: ArrayBuffer,
   provider: SpeechProvider = "local",
+  options?: { sttModel?: string },
 ): Promise<string> {
+  const pcm = Buffer.from(audioData);
   let text: string;
 
   switch (provider) {
     case "local": {
-      const samples = new Float32Array(audioData);
+      const samples = pcmInt16ToFloat32(pcm);
       text = await transcribeLocal(samples);
       break;
     }
     case "openai": {
-      const samples = new Float32Array(audioData);
-      text = await transcribeOpenAI(samples);
+      const samples = pcmInt16ToFloat32(pcm);
+      text = await transcribeOpenAI(samples, options?.sttModel);
       break;
     }
     case "elevenlabs":
-      text = await transcribeElevenLabs(Buffer.from(audioData));
+      text = await transcribeElevenLabs(pcmInt16ToWav(pcm));
       break;
     case "gemini":
     default:
-      text = await transcribeGemini(Buffer.from(audioData));
+      text = await transcribeGemini(pcmInt16ToWav(pcm));
       break;
   }
 

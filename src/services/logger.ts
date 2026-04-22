@@ -1,13 +1,10 @@
 /**
- * Centralized pino logger for the pi-voice daemon.
- *
- * Outputs to both the console (stdout) and a log file simultaneously
- * using pino.multistream.
+ * Centralized pino logger for pi-voice.
  *
  * Log file location (in order of precedence):
  *   1. PI_VOICE_LOG_PATH environment variable
- *   2. $XDG_CONFIG_HOME/pi-voice/daemon.log  (if XDG_CONFIG_HOME is set)
- *   3. ~/.config/pi-voice/daemon.log          (default)
+ *   2. $XDG_CONFIG_HOME/pi-voice/pi-voice.log  (if XDG_CONFIG_HOME is set)
+ *   3. ~/.config/pi-voice/pi-voice.log          (default)
  */
 
 import { join } from "node:path";
@@ -20,24 +17,16 @@ function resolveLogPath(): string {
 
   const configHome =
     process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config");
-  return join(configHome, "pi-voice", "daemon.log");
+  return join(configHome, "pi-voice", "pi-voice.log");
 }
 
 const logPath = resolveLogPath();
 
 const logger = pino(
   {
-    level: "debug",
+    level: "info",
   },
-  pino.multistream([
-    // Console output (human-readable via stdout)
-    { level: "debug", stream: process.stdout },
-    // File output (JSON, auto-creates parent directories)
-    {
-      level: "debug",
-      stream: pino.destination({ dest: logPath, mkdir: true, sync: true }),
-    },
-  ]),
+  pino.destination({ dest: logPath, mkdir: true, sync: true }),
 );
 
 export default logger;

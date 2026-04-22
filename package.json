@@ -1,53 +1,47 @@
 {
   "name": "pi-voice",
-  "version": "0.4.0",
-  "description": "Voice interface for pi coding agent",
+  "version": "0.5.0",
+  "description": "Voice interface for pi coding agent – in-process extension",
   "author": "Yuku Kotani",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/yukukotani/pi-voice"
   },
-  "type": "module",
-  "main": "./out/main/index.js",
-  "bin": {
-    "pi-voice": "./bin/pi-voice"
-  },
-  "files": [
-    "bin/",
-    "out/"
+  "keywords": [
+    "pi-package"
   ],
+  "type": "module",
+  "files": [
+    "extensions/",
+    "src/services/",
+    "src/shared/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
   "scripts": {
-    "cli": "bun src/cli.ts",
-    "dev:electron": "electron-vite dev",
-    "dev:cli": "bun src/cli.ts",
-    "build": "bun run build:electron && bun run build:cli",
-    "build:electron": "electron-vite build",
-    "build:cli": "bun build src/cli.ts --outdir out/cli --target node --format esm --external electron",
-    "preview": "electron-vite preview",
-    "prepack": "bun run build",
-    "prepublish": "bun run build"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "electron-vite": "^3.1.0"
+    "@types/bun": "latest"
   },
   "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.52.7",
     "typescript": "^5"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.35.0",
     "@google/genai": "^1.40.0",
-    "@mariozechner/pi-coding-agent": "^0.52.7",
     "@napi-rs/whisper": "^0.0.4",
-    "electron": "^40.2.1",
     "openai": "^6.10.0",
     "pino": "^10.3.1",
-    "uiohook-napi": "^1.5.4",
     "zod": "^4.3.6"
   },
   "trustedDependencies": [
-    "electron",
     "uiohook-napi",
     "protobufjs"
   ]

@@ -11,7 +11,14 @@ let openaiClient: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
   if (openaiClient) return openaiClient;
-  const apiKey = process.env.OPENAI_API_KEY;
+  const baseURL = process.env.OPENAI_BASE_URL;
+  const isLocalhost =
+    baseURL !== undefined &&
+    (baseURL.startsWith("http://localhost") ||
+      baseURL.startsWith("http://127.0.0.1") ||
+      baseURL.startsWith("https://localhost") ||
+      baseURL.startsWith("https://127.0.0.1"));
+  const apiKey = process.env.OPENAI_API_KEY ?? (isLocalhost ? "sk-test" : undefined);
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }

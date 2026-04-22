@@ -35,7 +35,7 @@ describe("logger resolveLogPath logic", () => {
 
     const configHome =
       process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config");
-    return join(configHome, "pi-voice", "daemon.log");
+    return join(configHome, "pi-voice", "pi-voice.log");
   }
 
   test("uses PI_VOICE_LOG_PATH when set", () => {
@@ -46,20 +46,20 @@ describe("logger resolveLogPath logic", () => {
   test("uses XDG_CONFIG_HOME when set", () => {
     delete process.env.PI_VOICE_LOG_PATH;
     process.env.XDG_CONFIG_HOME = "/custom/config";
-    expect(resolveLogPath()).toBe("/custom/config/pi-voice/daemon.log");
+    expect(resolveLogPath()).toBe("/custom/config/pi-voice/pi-voice.log");
   });
 
   test("falls back to ~/.config when no env vars set", () => {
     delete process.env.PI_VOICE_LOG_PATH;
     delete process.env.XDG_CONFIG_HOME;
-    const expected = join(homedir(), ".config", "pi-voice", "daemon.log");
+    const expected = join(homedir(), ".config", "pi-voice", "pi-voice.log");
     expect(resolveLogPath()).toBe(expected);
   });
 
-  test("path always ends with daemon.log", () => {
+  test("path always ends with pi-voice.log", () => {
     delete process.env.PI_VOICE_LOG_PATH;
     delete process.env.XDG_CONFIG_HOME;
-    expect(resolveLogPath()).toMatch(/daemon\.log$/);
+    expect(resolveLogPath()).toMatch(/pi-voice\.log$/);
   });
 
   test("path contains pi-voice directory", () => {
