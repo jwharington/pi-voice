@@ -41,6 +41,38 @@ import logger from "../src/services/logger.js";
 const STATUS_KEY = "pi-voice";
 const SPINNER = ["⠁", "⠂", "⠄", "⠂"];
 
+/**
+ * Global symbol used to share the active voice input handler across extensions.
+ * Rather than calling setEditorComponent (which replaces any editor set by other
+ * extensions like pi-powerline-footer), we patch CustomEditor.prototype.handleInput
+ * once and store the per-session handler here. Any editor that extends CustomEditor
+ * (including BashModeEditor) will invoke it via super.handleInput(), so the two
+ * extensions compose transparently.
+ */
+const VOICE_HANDLER_SYMBOL = Symbol.for("pi-voice:handleInput");
+
+/** True once the one-time prototype patch has been applied. */
+let protoPatchApplied = false;
+
+/**
+ * Patches CustomEditor.prototype.handleInput exactly once so that any active voice
+ * handler stored in globalThis[VOICE_HANDLER_SYMBOL] is called before normal input
+ * processing. Returning true from the handler means the key was consumed.
+ */
+function ensureProtoPatch(): void {
+    if (protoPatchApplied) return;
+    protoPatchApplied = true;
+
+    const originalHandleInput = CustomEditor.prototype.handleInput as (data: string) => void;
+    CustomEditor.prototype.handleInput = function (data: string): void {
+        const handler = Reflect.get(globalThis, VOICE_HANDLER_SYMBOL) as
+            | ((data: string) => boolean)
+            | undefined;
+        if (handler?.(data)) return;
+        originalHandleInput.call(this, data);
+    };
+}
+
 let config: PiVoiceConfig | null = null;
 let recorder: AudioRecorder | null = null;
 let spinnerFrame = 0;
@@ -250,7 +282,8 @@ export default function (pi: ExtensionAPI): void {
         if (recorder?.isRecording) {
             recorder.stop().catch(() => { });
         }
-        ctx.ui.setEditorComponent(undefined);
+        // Clear the voice handler so no stale handler remains between sessions.
+        Reflect.deleteProperty(globalThis, VOICE_HANDLER_SYMBOL);
         stopSpinner(ctx);
         recorder = null;
         pendingTts = false;
@@ -261,71 +294,68 @@ export default function (pi: ExtensionAPI): void {
 
     pi.on("session_start", (_event, ctx) => {
         const keyId = config!.shortcut.toLowerCase() as KeyId;
-        ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-            class VoiceEditor extends CustomEditor {
-                override handleInput(data: string): void {
-                    if (matchesKey(data, keyId)) {
-                        if (!config?.enabled) return;
 
-                        // If release events aren't available, gracefully degrade to toggle mode.
-                        if (!isKittyProtocolActive()) {
-                            if (recorder?.isRecording) {
-                                keyPressed = false;
-                                void stopRecording(ctx, pi, true);
-                            } else {
-                                keyPressed = true;
-                                try {
-                                    startRecording(ctx);
-                                } catch (err) {
-                                    keyPressed = false;
-                                    recorder = null;
-                                    const msg = err instanceof Error ? err.message : String(err);
-                                    logger.error({ err: msg }, "Failed to start recording");
-                                    ctx.ui.notify(`Could not start recording: ${msg}`, "error");
-                                }
-                            }
-                            return;
-                        }
+        // Patch CustomEditor.prototype.handleInput once so the voice handler
+        // composes with any editor set by other extensions (e.g. pi-powerline-footer's
+        // BashModeEditor) without calling setEditorComponent and overwriting them.
+        ensureProtoPatch();
 
-                        const released = isKeyRelease(data);
-                        if (released) {
-                            // Hold-to-talk: release always stops if we started via hold.
-                            if (keyPressed) {
-                                keyPressed = false;
-                                void stopRecording(ctx, pi, true);
-                            }
-                            return;
-                        }
+        Reflect.set(globalThis, VOICE_HANDLER_SYMBOL, (data: string): boolean => {
+            if (!matchesKey(data, keyId)) return false;
+            if (!config?.enabled) return true; // consume but ignore when disabled
 
-                        // Keydown event.
-                        if (recorder?.isRecording) {
-                            // Short-press toggle: a second press while recording stops immediately
-                            // without waiting for the key release.
-                            keyPressed = false;
-                            void stopRecording(ctx, pi, true);
-                            return;
-                        }
-
-                        if (keyPressed) return; // key-repeat guard during start-up
-
-                        keyPressed = true;
-                        try {
-                            startRecording(ctx);
-                        } catch (err) {
-                            keyPressed = false;
-                            recorder = null;
-                            const msg = err instanceof Error ? err.message : String(err);
-                            logger.error({ err: msg }, "Failed to start recording");
-                            ctx.ui.notify(`Could not start recording: ${msg}`, "error");
-                        }
-                        return;
+            // If release events aren't available, gracefully degrade to toggle mode.
+            if (!isKittyProtocolActive()) {
+                if (recorder?.isRecording) {
+                    keyPressed = false;
+                    void stopRecording(ctx, pi, true);
+                } else {
+                    keyPressed = true;
+                    try {
+                        startRecording(ctx);
+                    } catch (err) {
+                        keyPressed = false;
+                        recorder = null;
+                        const msg = err instanceof Error ? err.message : String(err);
+                        logger.error({ err: msg }, "Failed to start recording");
+                        ctx.ui.notify(`Could not start recording: ${msg}`, "error");
                     }
-
-                    super.handleInput(data);
                 }
+                return true;
             }
 
-            return new VoiceEditor(tui, theme, keybindings);
+            const released = isKeyRelease(data);
+            if (released) {
+                // Hold-to-talk: release always stops if we started via hold.
+                if (keyPressed) {
+                    keyPressed = false;
+                    void stopRecording(ctx, pi, true);
+                }
+                return true;
+            }
+
+            // Keydown event.
+            if (recorder?.isRecording) {
+                // Short-press toggle: a second press while recording stops immediately
+                // without waiting for the key release.
+                keyPressed = false;
+                void stopRecording(ctx, pi, true);
+                return true;
+            }
+
+            if (keyPressed) return true; // key-repeat guard during start-up
+
+            keyPressed = true;
+            try {
+                startRecording(ctx);
+            } catch (err) {
+                keyPressed = false;
+                recorder = null;
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.error({ err: msg }, "Failed to start recording");
+                ctx.ui.notify(`Could not start recording: ${msg}`, "error");
+            }
+            return true;
         });
     });
 
