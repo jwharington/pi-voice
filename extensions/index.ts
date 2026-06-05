@@ -29,7 +29,7 @@
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from "@mariozechner/pi-coding-agent";
 import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
-import { transcribe } from "../src/services/stt.js";
+import { transcribeStreaming, type SttStreamCallbacks } from "../src/services/stt.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
 import { createSettingsComponent } from "./settings.js";
 import { getVoicesForProvider } from "../src/services/voices.js";
@@ -222,15 +222,38 @@ async function runPipeline(
     }
 
     try {
-        // ── STT ──────────────────────────────────────────────────────────
+        // ── STT with streaming deltas ────────────────────────────────
+        let transcriptAccumulated = "";
+
+        const sttCallbacks: SttStreamCallbacks = {
+            onDelta: (delta: string) => {
+                transcriptAccumulated += delta;
+                // Show incremental transcript in the status bar (truncated).
+                const display = transcriptAccumulated.trim();
+                if (display.length > 0) {
+                    const truncated = display.length > 50
+                        ? display.slice(0, 50) + "…"
+                        : display;
+                    setStatus(ctx, `transcribing… ${truncated}`);
+                }
+            },
+            onDone: (text: string) => {
+                logger.info({ transcript: text }, "Transcript ready");
+            },
+            onError: (error: Error) => {
+                logger.error({ err: error.message }, "STT streaming error");
+            },
+        };
+
         setStatus(ctx, "transcribing…");
-        const transcript = await transcribe(
+        const transcript = await transcribeStreaming(
           pcm.buffer as ArrayBuffer,
           config.provider,
           {
             sttModel: config.sttModel,
             sttBaseUrl: config.sttBaseUrl,
           },
+          sttCallbacks,
         );
 
         if (!transcript.trim()) {
@@ -238,8 +261,6 @@ async function runPipeline(
             setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 2000);
             return;
         }
-
-        logger.info({ transcript }, "Transcript ready");
 
         if (!config.ttsEnabled) {
             // Inject transcript into the editor buffer – user can edit / submit

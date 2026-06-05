@@ -206,6 +206,18 @@ interface SttOptions {
   sttBaseUrl?: string;
 }
 
+/**
+ * Callback invoked with incremental transcript deltas during streaming transcription.
+ */
+export interface SttStreamCallbacks {
+  /** Called with each text delta as it arrives. */
+  onDelta?: (delta: string) => void;
+  /** Called when the transcription is complete with the final text. */
+  onDone?: (text: string) => void;
+  /** Called if an error occurs during transcription. */
+  onError?: (error: Error) => void;
+}
+
 async function transcribeOpenAI(
   samples: Float32Array,
   options?: SttOptions,
@@ -237,6 +249,80 @@ async function transcribeOpenAI(
   });
 
   return sanitizeTranscriptionText(transcription.text ?? "");
+}
+
+/**
+ * Stream transcription from an OpenAI-compatible provider.
+ * Tries `stream: true` first (SSE with delta + done events), then falls back
+ * to non-streaming mode when the server rejects the streaming parameter.
+ *
+ * Returns the final transcript text.  Callbacks are invoked for incremental
+ * deltas and the final result.
+ */
+async function transcribeOpenAIStreaming(
+  samples: Float32Array,
+  options?: SttOptions,
+  callbacks?: SttStreamCallbacks,
+): Promise<string> {
+  const baseUrl = resolveBaseUrl(options?.sttBaseUrl);
+  const client = getOpenAIClient(baseUrl);
+
+  const wavBuffer = pcmFloat32ToWav(samples);
+  const file = await toFile(wavBuffer, "recording.wav");
+
+  const model = options?.sttModel ?? process.env.OPENAI_STT_MODEL ?? DEFAULT_OPENAI_STT_MODEL;
+  const language = process.env.OPENAI_STT_LANGUAGE;
+  const prompt = process.env.OPENAI_STT_PROMPT;
+  const temperature = getOpenAISttTemperature();
+
+  // Attempt streaming transcription first
+  try {
+    const stream = await client.audio.transcriptions.create({
+      model,
+      file,
+      stream: true,
+      ...(language ? { language } : {}),
+      ...(prompt ? { prompt } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+    });
+
+    let fullText = "";
+
+    for await (const event of stream) {
+      if (event.type === "transcript.text.delta") {
+        const delta = event.delta ?? "";
+        fullText += delta;
+        callbacks?.onDelta?.(delta);
+      } else if (event.type === "transcript.text.done") {
+        // The "done" event carries the final authoritative transcript
+        fullText = event.text ?? fullText;
+      }
+    }
+
+    const cleaned = sanitizeTranscriptionText(fullText);
+    callbacks?.onDone?.(cleaned);
+    return cleaned;
+  } catch (err) {
+    // Server doesn't support streaming (e.g. whisper-1 ignores stream: true,
+    // or the compatible server returns an error). Fall back to non-streaming.
+    logger.debug(
+      { err: (err as Error).message },
+      "Streaming transcription not supported, falling back",
+    );
+
+    const transcription = await client.audio.transcriptions.create({
+      model,
+      file,
+      response_format: "json",
+      ...(language ? { language } : {}),
+      ...(prompt ? { prompt } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+    });
+
+    const text = sanitizeTranscriptionText(transcription.text ?? "");
+    callbacks?.onDone?.(text);
+    return text;
+  }
 }
 
 // ── ElevenLabs STT ───────────────────────────────────────────────────
@@ -392,6 +478,52 @@ export async function transcribe(
     case "gemini":
     default:
       text = await transcribeGemini(pcmInt16ToWav(pcm));
+      break;
+  }
+
+  logger.info({ provider, text }, "Transcribed");
+  return text;
+}
+
+/**
+ * Transcribe audio to text with streaming delta callbacks.
+ *
+ * For OpenAI-compatible providers, this attempts streaming transcription
+ * (`stream: true`) which emits incremental text deltas via SSE.
+ * Falls back to non-streaming mode when the server does not support streaming.
+ *
+ * For other providers (local, Gemini, ElevenLabs), this behaves identically
+ * to `transcribe()` — the callbacks receive the final text via `onDone`.
+ */
+export async function transcribeStreaming(
+  audioData: ArrayBuffer,
+  provider: SpeechProvider,
+  options: TranscribeOptions,
+  callbacks: SttStreamCallbacks,
+): Promise<string> {
+  const pcm = Buffer.from(audioData);
+  let text: string;
+
+  switch (provider) {
+    case "openai": {
+      const samples = pcmInt16ToFloat32(pcm);
+      text = await transcribeOpenAIStreaming(samples, options, callbacks);
+      break;
+    }
+    case "local": {
+      const samples = pcmInt16ToFloat32(pcm);
+      text = await transcribeLocal(samples);
+      callbacks.onDone?.(text);
+      break;
+    }
+    case "elevenlabs":
+      text = await transcribeElevenLabs(pcmInt16ToWav(pcm));
+      callbacks.onDone?.(text);
+      break;
+    case "gemini":
+    default:
+      text = await transcribeGemini(pcmInt16ToWav(pcm));
+      callbacks.onDone?.(text);
       break;
   }
 
