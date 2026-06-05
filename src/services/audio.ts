@@ -188,18 +188,48 @@ export async function playPcmStream(
         logger.debug({ msg: data.toString().trim() }, "sox stderr");
     });
 
+    // Track whether this playback was externally cancelled (e.g. Escape pressed).
+    let cancelled = false;
+
     const done = new Promise<void>((resolve, reject) => {
         proc.on("close", (code) => {
+            // EPIPE on stdin causes sox to exit with code 1.
+            // When cancelled, we treat this as clean shutdown.
+            if (cancelled) {
+                resolve();
+                return;
+            }
             if (code !== null && code !== 0) {
                 reject(new Error(`sox exited with code ${code}`));
             } else {
                 resolve();
             }
         });
-        proc.on("error", reject);
+        proc.on("error", (err) => {
+            if (cancelled) return; // suppress errors after cancellation
+            reject(err);
+        });
+    });
+
+    // Catch EPIPE when sox is killed externally (e.g. stopPlayback via Escape).
+    // Without this handler, EPIPE becomes an uncaught exception that crashes Pi.
+    proc.stdin.on("error", (err) => {
+        const systemErr = err as NodeJS.ErrnoException;
+        if (systemErr.syscall === "write" && systemErr.code === "EPIPE") {
+            cancelled = true;
+            logger.info("PCM playback cancelled (pipe broken)");
+            return;
+        }
+        // For non-EPIPE errors, propagate them
+        if (!cancelled) {
+            logger.error({ err: err.message }, "sox stdin error");
+        }
     });
 
     for await (const chunk of chunks) {
+        // If sox was killed (e.g. Escape pressed), stop feeding chunks
+        if (cancelled) break;
+
         if (!proc.stdin.write(chunk)) {
             // Back-pressure: wait for drain before continuing
             await new Promise<void>((r) => proc.stdin.once("drain", r));
