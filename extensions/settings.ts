@@ -10,19 +10,30 @@ import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { KeybindingsManager } from "@mariozechner/pi-coding-agent";
 import type { PiVoiceConfig } from "../src/services/config.js";
 import { updateConfig, getEditableConfigPath, loadConfig } from "../src/services/config.js";
+import { getVoicesForProvider } from "../src/services/voices.js";
 
 /**
  * Creates a Component that wraps a SettingsList for pi-voice settings.
  * Uses Pi's native settings menu style with keyboard navigation, search, and submenus.
+ * Fetches available voices from the provider API.
  */
-export function createSettingsComponent(
+export async function createSettingsComponent(
   tui: TUI,
   theme: Theme,
   keybindings: KeybindingsManager,
   done: (result: boolean) => void,
-): Component & { dispose?(): void; } {
+): Promise<Component & { dispose?(): void; }> {
   const config = loadConfig(process.cwd());
   const configPath = getEditableConfigPath(process.cwd());
+
+  // Fetch available voices from the provider API (may take a moment)
+  const voiceList: string[] = [];
+  try {
+    const voices = await getVoicesForProvider(config.provider);
+    voiceList.push(...voices.map((v) => v.voiceId));
+  } catch {
+    // Use empty list if API fails
+  }
 
   // Helper to update config and the SettingsList value
   function updateSetting(id: string, newValue: string): void {
@@ -188,6 +199,7 @@ export function createSettingsComponent(
       label: "TTS Voice",
       description: "Voice name for text-to-speech (blank = use env/default)",
       currentValue: config.ttsVoice ?? "(env/default)",
+      ...(voiceList.length > 0 ? { values: ["(env/default)", ...voiceList] } : {}),
       submenu: (currentValue, done) => createInputSubmenu(
         "Enter TTS voice (blank = use env/default)",
         currentValue === "(env/default)" ? "" : currentValue,
