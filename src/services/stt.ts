@@ -2,43 +2,48 @@ import OpenAI, { toFile } from "openai";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import type { SpeechProvider } from "./config.js";
 import { getGeminiClient } from "./gemini-client.js";
-import { resolveModelPath } from "./whisper-model.js";
 import logger from "./logger.js";
 
-// ── OpenAI client ────────────────────────────────────────────────────
+// ── OpenAI client cache (keyed by base URL) ──────────────────────────
 
-let openaiClient: OpenAI | null = null;
-let openAiBaseUrl: string | undefined = undefined;
+const openAiClients = new Map<string, OpenAI>();
 
-function getOpenAIClient(): OpenAI {
-  // Prefer OPENAI_STT_BASE_URL; fall back to OPENAI_BASE_URL
-  const sttBaseUrl = process.env.OPENAI_STT_BASE_URL ?? process.env.OPENAI_BASE_URL;
+function resolveBaseUrl(configValue?: string): string | undefined {
+  // Priority: config field → provider-specific env → shared env
+  if (configValue) return configValue;
+  return process.env.OPENAI_BASE_URL;
+}
+
+function resolveApiKey(baseUrl?: string): string | undefined {
   const apiKey = process.env.OPENAI_API_KEY;
+  if (apiKey) return apiKey;
 
-  // Check if the effective base URL is localhost
-  const effectiveBaseUrl = sttBaseUrl;
+  // Auto-detect localhost – use dummy key when no real key needed
   const isLocalhost =
-    effectiveBaseUrl !== undefined &&
-    (effectiveBaseUrl.startsWith("http://localhost") ||
-      effectiveBaseUrl.startsWith("http://127.0.0.1") ||
-      effectiveBaseUrl.startsWith("https://localhost") ||
-      effectiveBaseUrl.startsWith("https://127.0.0.1"));
+    baseUrl !== undefined &&
+    (baseUrl.startsWith("http://localhost") ||
+      baseUrl.startsWith("http://127.0.0.1") ||
+      baseUrl.startsWith("https://localhost") ||
+      baseUrl.startsWith("https://127.0.0.1"));
 
-  const resolvedApiKey = apiKey ?? (isLocalhost ? "sk-test" : undefined);
-  if (!resolvedApiKey) {
+  return isLocalhost ? "sk-test" : undefined;
+}
+
+function getOpenAIClient(baseUrl: string | undefined): OpenAI {
+  const key = baseUrl ?? "__default__";
+  if (openAiClients.has(key)) return openAiClients.get(key)!;
+
+  const apiKey = resolveApiKey(baseUrl);
+  if (!apiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
 
-  // Only recreate the client if baseURL changed (e.g. STT vs TTS reuse)
-  if (openaiClient && openAiBaseUrl === effectiveBaseUrl) return openaiClient;
+  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey };
+  if (baseUrl) clientOptions.baseURL = baseUrl;
 
-  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey: resolvedApiKey };
-  if (effectiveBaseUrl) {
-    clientOptions.baseURL = effectiveBaseUrl;
-  }
-  openAiBaseUrl = effectiveBaseUrl;
-  openaiClient = new OpenAI(clientOptions);
-  return openaiClient;
+  const client = new OpenAI(clientOptions);
+  openAiClients.set(key, client);
+  return client;
 }
 
 // ── Local (Whisper) client ───────────────────────────────────────────
@@ -46,6 +51,8 @@ function getOpenAIClient(): OpenAI {
 // module load time because Electron runs a different Node ABI than the
 // host. We lazy-load it here so it is only resolved when the "local"
 // provider is actually invoked.
+
+import { resolveModelPath } from "./whisper-model.js";
 
 let whisperInstance: unknown | null = null;
 let whisperInitPromise: Promise<unknown> | null = null;
@@ -186,12 +193,22 @@ function getOpenAISttTemperature(): number | undefined {
   return parsed;
 }
 
-async function transcribeOpenAI(samples: Float32Array, sttModelOverride?: string): Promise<string> {
-  const client = getOpenAIClient();
+interface SttOptions {
+  sttModel?: string;
+  sttBaseUrl?: string;
+}
+
+async function transcribeOpenAI(
+  samples: Float32Array,
+  options?: SttOptions,
+): Promise<string> {
+  const baseUrl = resolveBaseUrl(options?.sttBaseUrl);
+  const client = getOpenAIClient(baseUrl);
 
   const wavBuffer = pcmFloat32ToWav(samples);
   const file = await toFile(wavBuffer, "recording.wav");
-  const model = sttModelOverride ?? process.env.OPENAI_STT_MODEL ?? DEFAULT_OPENAI_STT_MODEL;
+
+  const model = options?.sttModel ?? process.env.OPENAI_STT_MODEL ?? DEFAULT_OPENAI_STT_MODEL;
   const language = process.env.OPENAI_STT_LANGUAGE;
   const prompt = process.env.OPENAI_STT_PROMPT;
   const temperature = getOpenAISttTemperature();
@@ -326,6 +343,11 @@ export function pcmInt16ToWav(pcm: Buffer, sampleRate = 16000): Buffer {
 
 // ── Public API ───────────────────────────────────────────────────────
 
+interface TranscribeOptions {
+  sttModel?: string;
+  sttBaseUrl?: string;
+}
+
 /**
  * Transcribe audio to text.
  *
@@ -340,7 +362,7 @@ export function pcmInt16ToWav(pcm: Buffer, sampleRate = 16000): Buffer {
 export async function transcribe(
   audioData: ArrayBuffer,
   provider: SpeechProvider = "local",
-  options?: { sttModel?: string },
+  options?: TranscribeOptions,
 ): Promise<string> {
   const pcm = Buffer.from(audioData);
   let text: string;
@@ -353,7 +375,7 @@ export async function transcribe(
     }
     case "openai": {
       const samples = pcmInt16ToFloat32(pcm);
-      text = await transcribeOpenAI(samples, options?.sttModel);
+      text = await transcribeOpenAI(samples, options);
       break;
     }
     case "elevenlabs":

@@ -215,7 +215,14 @@ async function runPipeline(
     try {
         // ── STT ──────────────────────────────────────────────────────────
         setStatus(ctx, "transcribing…");
-        const transcript = await transcribe(pcm.buffer as ArrayBuffer, config.provider, { sttModel: config.sttModel });
+        const transcript = await transcribe(
+          pcm.buffer as ArrayBuffer,
+          config.provider,
+          {
+            sttModel: config.sttModel,
+            sttBaseUrl: config.sttBaseUrl,
+          },
+        );
 
         if (!transcript.trim()) {
             setStatus(ctx, "no speech detected");
@@ -393,7 +400,11 @@ export default function (pi: ExtensionAPI): void {
                 // Cloud providers: stream PCM to sox for playback
                 async function* generateChunks(): AsyncIterable<Buffer> {
                     for (const seg of textSegments) {
-                        yield* synthesizeStream(seg, config!.provider);
+                        yield* synthesizeStream(seg, config!.provider, {
+                            ttsBaseUrl: config!.ttsBaseUrl,
+                            ttsModel: config!.ttsModel,
+                            ttsVoice: config!.ttsVoice,
+                        });
                     }
                 }
                 await playPcmStream(generateChunks());
@@ -464,7 +475,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|enabled> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|enabled|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -510,7 +521,35 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, enabled, sttModel", "warning");
+                if (field === "sttbaseurl" || field === "stt-baseurl" || field === "stt_baseurl") {
+                    const url = value.trim();
+                    config = updateConfig(process.cwd(), { sttBaseUrl: url || undefined });
+                    ctx.ui.notify(url ? `sttBaseUrl set to ${url}` : "sttBaseUrl cleared (using env/default)", "info");
+                    return;
+                }
+
+                if (field === "ttsbaseurl" || field === "tts-baseurl" || field === "tts_baseurl") {
+                    const url = value.trim();
+                    config = updateConfig(process.cwd(), { ttsBaseUrl: url || undefined });
+                    ctx.ui.notify(url ? `ttsBaseUrl set to ${url}` : "ttsBaseUrl cleared (using env/default)", "info");
+                    return;
+                }
+
+                if (field === "ttsmodel" || field === "tts-model" || field === "tts_model") {
+                    const model = value.trim();
+                    config = updateConfig(process.cwd(), { ttsModel: model || undefined });
+                    ctx.ui.notify(model ? `ttsModel set to ${model}` : "ttsModel cleared (using env/default)", "info");
+                    return;
+                }
+
+                if (field === "ttsvoice" || field === "tts-voice" || field === "tts_voice") {
+                    const voice = value.trim();
+                    config = updateConfig(process.cwd(), { ttsVoice: voice || undefined });
+                    ctx.ui.notify(voice ? `ttsVoice set to ${voice}` : "ttsVoice cleared (using env/default)", "info");
+                    return;
+                }
+
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, enabled, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -525,7 +564,11 @@ export default function (pi: ExtensionAPI): void {
                     `provider:  ${config.provider}`,
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
+                    `sttBaseUrl: ${config.sttBaseUrl ?? "(env/default)"}`,
+                    `ttsBaseUrl: ${config.ttsBaseUrl ?? "(env/default)"}`,
                     `sttModel:  ${config.sttModel ?? "(env/default)"}`,
+                    `ttsModel:  ${config.ttsModel ?? "(env/default)"}`,
+                    `ttsVoice:  ${config.ttsVoice ?? "(env/default)"}`,
                 ];
                 ctx.ui.notify(lines.join("\n"), "info");
                 return;
@@ -540,11 +583,15 @@ export default function (pi: ExtensionAPI): void {
                 // Interactive menu loop — mirrors pi's own settings style.
                 while (true) {
                     const choice = await ctx.ui.select("pi-voice settings", [
-                        `shortcut   ${config.shortcut}`,
-                        `provider   ${config.provider}`,
-                        `enabled    ${config.enabled}`,
-                        `tts        ${config.ttsEnabled}`,
-                        `sttModel   ${config.sttModel ?? "(env/default)"}`,
+                        `shortcut     ${config.shortcut}`,
+                        `provider     ${config.provider}`,
+                        `enabled      ${config.enabled}`,
+                        `tts          ${config.ttsEnabled}`,
+                        `sttBaseUrl   ${config.sttBaseUrl ?? "(env/default)"}`,
+                        `ttsBaseUrl   ${config.ttsBaseUrl ?? "(env/default)"}`,
+                        `sttModel     ${config.sttModel ?? "(env/default)"}`,
+                        `ttsModel     ${config.ttsModel ?? "(env/default)"}`,
+                        `ttsVoice     ${config.ttsVoice ?? "(env/default)"}`,
                         "✓ done",
                     ]);
 
@@ -566,10 +613,28 @@ export default function (pi: ExtensionAPI): void {
                         if (val !== undefined) {
                             config = updateConfig(process.cwd(), { enabled: val === "true" });
                         }
-                    } else if (choice.startsWith("tts")) {
+                    } else if (choice.startsWith("tts ")) {
                         const val = await ctx.ui.select("TTS enabled", ["true", "false"]);
                         if (val !== undefined) {
                             config = updateConfig(process.cwd(), { ttsEnabled: val === "true" });
+                        }
+                    } else if (choice.startsWith("sttBaseUrl")) {
+                        const val = await ctx.ui.input(
+                            "STT base URL (blank = use OPENAI_BASE_URL env)",
+                            config.sttBaseUrl ?? "",
+                        );
+                        if (val !== undefined) {
+                            const trimmed = val.trim();
+                            config = updateConfig(process.cwd(), { sttBaseUrl: trimmed || undefined });
+                        }
+                    } else if (choice.startsWith("ttsBaseUrl")) {
+                        const val = await ctx.ui.input(
+                            "TTS base URL (blank = use OPENAI_BASE_URL env)",
+                            config.ttsBaseUrl ?? "",
+                        );
+                        if (val !== undefined) {
+                            const trimmed = val.trim();
+                            config = updateConfig(process.cwd(), { ttsBaseUrl: trimmed || undefined });
                         }
                     } else if (choice.startsWith("sttModel")) {
                         const val = await ctx.ui.input(
@@ -579,6 +644,24 @@ export default function (pi: ExtensionAPI): void {
                         if (val !== undefined) {
                             const trimmed = val.trim();
                             config = updateConfig(process.cwd(), { sttModel: trimmed || undefined });
+                        }
+                    } else if (choice.startsWith("ttsModel")) {
+                        const val = await ctx.ui.input(
+                            "TTS model (blank = use OPENAI_TTS_MODEL env / gpt-4o-mini-tts default)",
+                            config.ttsModel ?? "",
+                        );
+                        if (val !== undefined) {
+                            const trimmed = val.trim();
+                            config = updateConfig(process.cwd(), { ttsModel: trimmed || undefined });
+                        }
+                    } else if (choice.startsWith("ttsVoice")) {
+                        const val = await ctx.ui.input(
+                            "TTS voice (blank = use OPENAI_TTS_VOICE env / alloy default)",
+                            config.ttsVoice ?? "",
+                        );
+                        if (val !== undefined) {
+                            const trimmed = val.trim();
+                            config = updateConfig(process.cwd(), { ttsVoice: trimmed || undefined });
                         }
                     }
                 }

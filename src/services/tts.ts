@@ -5,40 +5,46 @@ import type { SpeechProvider } from "./config.js";
 import { getGeminiClient } from "./gemini-client.js";
 import logger from "./logger.js";
 
-// ── OpenAI client ────────────────────────────────────────────────────
+// ── OpenAI client cache (keyed by base URL) ──────────────────────────
 
-let openaiClient: OpenAI | null = null;
-let openAiTtsBaseUrl: string | undefined = undefined;
+const openAiTtsClients = new Map<string, OpenAI>();
 
-function getOpenAIClient(): OpenAI {
-  // Prefer OPENAI_TTS_BASE_URL; fall back to OPENAI_BASE_URL
-  const ttsBaseUrl = process.env.OPENAI_TTS_BASE_URL ?? process.env.OPENAI_BASE_URL;
+function resolveTtsBaseUrl(configValue?: string): string | undefined {
+  // Priority: config field → OPENAI_TTS_BASE_URL env → OPENAI_BASE_URL env
+  if (configValue) return configValue;
+  return process.env.OPENAI_TTS_BASE_URL ?? process.env.OPENAI_BASE_URL;
+}
+
+function resolveApiKey(baseUrl?: string): string | undefined {
   const apiKey = process.env.OPENAI_API_KEY;
+  if (apiKey) return apiKey;
 
-  // Check if the effective base URL is localhost
-  const effectiveBaseUrl = ttsBaseUrl;
+  // Auto-detect localhost – use dummy key when no real key needed
   const isLocalhost =
-    effectiveBaseUrl !== undefined &&
-    (effectiveBaseUrl.startsWith("http://localhost") ||
-      effectiveBaseUrl.startsWith("http://127.0.0.1") ||
-      effectiveBaseUrl.startsWith("https://localhost") ||
-      effectiveBaseUrl.startsWith("https://127.0.0.1"));
+    baseUrl !== undefined &&
+    (baseUrl.startsWith("http://localhost") ||
+      baseUrl.startsWith("http://127.0.0.1") ||
+      baseUrl.startsWith("https://localhost") ||
+      baseUrl.startsWith("https://127.0.0.1"));
 
-  const resolvedApiKey = apiKey ?? (isLocalhost ? "sk-test" : undefined);
-  if (!resolvedApiKey) {
+  return isLocalhost ? "sk-test" : undefined;
+}
+
+function getOpenAIClient(baseUrl: string | undefined): OpenAI {
+  const key = baseUrl ?? "__default__";
+  if (openAiTtsClients.has(key)) return openAiTtsClients.get(key)!;
+
+  const apiKey = resolveApiKey(baseUrl);
+  if (!apiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
 
-  // Only recreate the client if baseURL changed
-  if (openaiClient && openAiTtsBaseUrl === effectiveBaseUrl) return openaiClient;
+  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey };
+  if (baseUrl) clientOptions.baseURL = baseUrl;
 
-  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey: resolvedApiKey };
-  if (effectiveBaseUrl) {
-    clientOptions.baseURL = effectiveBaseUrl;
-  }
-  openAiTtsBaseUrl = effectiveBaseUrl;
-  openaiClient = new OpenAI(clientOptions);
-  return openaiClient;
+  const client = new OpenAI(clientOptions);
+  openAiTtsClients.set(key, client);
+  return client;
 }
 
 // ── Audio parameters ─────────────────────────────────────────────────
@@ -127,13 +133,21 @@ async function* synthesizeStreamGemini(
 
 // ── OpenAI TTS ───────────────────────────────────────────────────────
 
+interface TtsOptions {
+  ttsBaseUrl?: string;
+  ttsModel?: string;
+  ttsVoice?: string;
+}
+
 async function* synthesizeStreamOpenAI(
   text: string,
+  options?: TtsOptions,
 ): AsyncGenerator<Buffer, void, undefined> {
-  const client = getOpenAIClient();
+  const baseUrl = resolveTtsBaseUrl(options?.ttsBaseUrl);
+  const client = getOpenAIClient(baseUrl);
 
-  const model = process.env.OPENAI_TTS_MODEL ?? "gpt-4o-mini-tts";
-  const voice = process.env.OPENAI_TTS_VOICE ?? "alloy";
+  const model = options?.ttsModel ?? process.env.OPENAI_TTS_MODEL ?? "gpt-4o-mini-tts";
+  const voice = options?.ttsVoice ?? process.env.OPENAI_TTS_VOICE ?? "alloy";
 
   const response = await client.audio.speech.create({
     model,
@@ -224,7 +238,7 @@ async function* synthesizeStreamElevenLabs(
 
 /**
  * Speak text using the macOS `say` command, playing directly through the
- * system audio output. Returns a promise that resolves when speech finishes.
+ * system's default audio output. Returns a promise that resolves when speech finishes.
  */
 export function speakLocal(text: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -262,6 +276,12 @@ export function speakLocal(text: string): Promise<void> {
 
 // ── Public API ───────────────────────────────────────────────────────
 
+interface TtsOptions {
+  ttsBaseUrl?: string;
+  ttsModel?: string;
+  ttsVoice?: string;
+}
+
 /**
  * Convert text to speech using the configured provider (streaming).
  * Yields raw PCM chunks (24kHz, 16-bit, mono) as Buffers.
@@ -273,6 +293,7 @@ export function speakLocal(text: string): Promise<void> {
 export async function* synthesizeStream(
   text: string,
   provider: SpeechProvider = "local",
+  options?: TtsOptions,
 ): AsyncGenerator<Buffer, void, undefined> {
   switch (provider) {
     case "local":
@@ -281,7 +302,7 @@ export async function* synthesizeStream(
         "Local TTS does not support PCM streaming. Use speakLocal() instead.",
       );
     case "openai":
-      yield* synthesizeStreamOpenAI(text);
+      yield* synthesizeStreamOpenAI(text, options);
       break;
     case "elevenlabs":
       yield* synthesizeStreamElevenLabs(text);

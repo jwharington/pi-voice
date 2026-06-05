@@ -21,8 +21,22 @@ export interface PiVoiceConfig {
   enabled: boolean;
   /** Whether to synthesize spoken output (default: true) */
   ttsEnabled: boolean;
-  /** Optional STT model override for the openai provider (fallback: OPENAI_STT_MODEL env → "whisper-1") */
+  /**
+   * OpenAI-compatible base URL for STT (e.g. http://localhost:8010).
+   * Falls back to OPENAI_STT_BASE_URL env, then OPENAI_BASE_URL env.
+   */
+  sttBaseUrl?: string;
+  /**
+   * OpenAI-compatible base URL for TTS (e.g. http://localhost:8011).
+   * Falls back to OPENAI_TTS_BASE_URL env, then OPENAI_BASE_URL env.
+   */
+  ttsBaseUrl?: string;
+  /** STT model name (default: "whisper-1") */
   sttModel?: string;
+  /** TTS model name (default: "gpt-4o-mini-tts") */
+  ttsModel?: string;
+  /** TTS voice name (default: "alloy") */
+  ttsVoice?: string;
 }
 
 // ── Default config ───────────────────────────────────────────────────
@@ -52,7 +66,11 @@ const configFileSchema = z.object({
   provider: z.enum(["local", "gemini", "openai", "elevenlabs"]).optional().default(DEFAULT_PROVIDER),
   enabled: z.boolean().optional().default(true),
   tts: z.boolean().optional().default(true),
+  sttBaseUrl: z.string().url().min(1).optional(),
+  ttsBaseUrl: z.string().url().min(1).optional(),
   sttModel: z.string().min(1).optional(),
+  ttsModel: z.string().min(1).optional(),
+  ttsVoice: z.string().min(1).optional(),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -180,11 +198,15 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     provider: parsed.provider,
     enabled: parsed.enabled,
     ttsEnabled: parsed.tts,
+    ...(parsed.sttBaseUrl ? { sttBaseUrl: parsed.sttBaseUrl } : {}),
+    ...(parsed.ttsBaseUrl ? { ttsBaseUrl: parsed.ttsBaseUrl } : {}),
     ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
+    ...(parsed.ttsModel ? { ttsModel: parsed.ttsModel } : {}),
+    ...(parsed.ttsVoice ? { ttsVoice: parsed.ttsVoice } : {}),
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "sttModel">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -206,7 +228,11 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       provider: next.provider,
       enabled: next.enabled,
       tts: next.ttsEnabled,
+      ...(next.sttBaseUrl ? { sttBaseUrl: next.sttBaseUrl } : {}),
+      ...(next.ttsBaseUrl ? { ttsBaseUrl: next.ttsBaseUrl } : {}),
       ...(next.sttModel ? { sttModel: next.sttModel } : {}),
+      ...(next.ttsModel ? { ttsModel: next.ttsModel } : {}),
+      ...(next.ttsVoice ? { ttsVoice: next.ttsVoice } : {}),
     }, null, 2)}\n`,
     "utf-8",
   );

@@ -47,7 +47,7 @@ pi-voice runs entirely inside pi — no background daemon needed. Once installed
 | `/voice config` | Print the resolved configuration |
 | `/voice enable` | Enable voice hotkey handling |
 | `/voice disable` | Disable voice hotkey handling |
-| `/voice set <shortcut\|provider\|tts\|enabled> <value>` | Edit and persist pi-voice settings |
+| `/voice set <shortcut\|provider\|tts\|enabled\|sttModel\|ttsModel\|ttsVoice\|sttBaseUrl\|ttsBaseUrl> <value>` | Edit and persist pi-voice settings |
 | `/voice set shortcut <value>` | Update shortcut (restart pi to rebind) |
 
 ## Configuration
@@ -59,7 +59,12 @@ Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.jso
   "shortcut": "f12",
   "provider": "openai",
   "enabled": true,
-  "tts": true
+  "tts": true,
+  "sttBaseUrl": "http://localhost:8010",
+  "ttsBaseUrl": "http://localhost:8011",
+  "sttModel": "whisper-1",
+  "ttsModel": "kokoro",
+  "ttsVoice": "af_heart"
 }
 ```
 
@@ -69,44 +74,52 @@ Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.jso
 | `provider` | Speech provider for STT & TTS. `"local"`, `"gemini"` (Vertex AI or Gemini API), `"openai"`, or `"elevenlabs"`. Default: `"local"`. |
 | `enabled` | Enables or disables voice shortcut handling. Default: `true`. |
 | `tts` | Enable text-to-speech for agent responses. Default: `false`. |
+| `sttBaseUrl` | OpenAI-compatible base URL for STT (e.g. `http://localhost:8010`). Falls back to `OPENAI_STT_BASE_URL` env, then `OPENAI_BASE_URL` env. |
+| `ttsBaseUrl` | OpenAI-compatible base URL for TTS (e.g. `http://localhost:8011`). Falls back to `OPENAI_TTS_BASE_URL` env, then `OPENAI_BASE_URL` env. |
+| `sttModel` | STT model name. Default: `"whisper-1"`. |
+| `ttsModel` | TTS model name. Default: `"gpt-4o-mini-tts"`. |
+| `ttsVoice` | TTS voice name. Default: `"alloy"`.
 
-### Environment variables
+### Environment variables (optional fallbacks)
+
+All `openai` provider settings can be set via `pi-voice.json` config (preferred). Environment variables act as fallbacks when config fields are not set:
+
+| Variable | Config Field | Description |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | — | API key. Not needed for localhost URLs — auto-detected. |
+| `OPENAI_STT_BASE_URL` | `sttBaseUrl` | STT base URL |
+| `OPENAI_TTS_BASE_URL` | `ttsBaseUrl` | TTS base URL |
+| `OPENAI_BASE_URL` | — | Shared STT/TTS base URL (fallback for both) |
+| `OPENAI_STT_MODEL` | `sttModel` | STT model (default: `whisper-1`) |
+| `OPENAI_TTS_MODEL` | `ttsModel` | TTS model (default: `gpt-4o-mini-tts`) |
+| `OPENAI_TTS_VOICE` | `ttsVoice` | TTS voice (default: `alloy`) |
+
+For `gemini` and `elevenlabs` providers, env vars remain as the primary config:
 
 | Provider | Required variables |
 | --- | --- |
-| `local` | None (model is auto-downloaded on first launch). Optional: `WHISPER_MODEL_PATH` (custom model path), `WHISPER_MODEL` (model name, default `medium-q5_0`), `SAY_VOICE` (macOS `say` voice name, e.g. `"Kyoko"`). |
+| `local` | None (model is auto-downloaded on first launch). Optional: `WHISPER_MODEL_PATH`, `WHISPER_MODEL` (default `medium-q5_0`), `SAY_VOICE` (macOS `say` voice name, e.g. `"Kyoko"`). |
 | `gemini` | **Vertex AI:** `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` (optional, default `us-central1`). **Gemini API:** `GEMINI_API_KEY` or `GOOGLE_API_KEY`. If `GOOGLE_CLOUD_PROJECT` is set, Vertex AI is used; set `GOOGLE_GENAI_USE_VERTEXAI=false` to force API key mode. |
-| `openai` | `OPENAI_API_KEY`. Optional: `OPENAI_BASE_URL` (shared STT/TTS base URL), `OPENAI_STT_BASE_URL` (STT-only URL, overrides `OPENAI_BASE_URL`), `OPENAI_TTS_BASE_URL` (TTS-only URL, overrides `OPENAI_BASE_URL`), `OPENAI_STT_MODEL` (default `whisper-1`), `OPENAI_STT_RESPONSE_FORMAT` (default `json`), `OPENAI_STT_PROMPT`, `OPENAI_STT_LANGUAGE`, `OPENAI_STT_TEMPERATURE`, `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`), `OPENAI_TTS_VOICE` (default `alloy`). |
 | `elevenlabs` | `ELEVENLABS_API_KEY`. Optional: `ELEVENLABS_VOICE_ID` (TTS voice, default `CwhRBWXzGAHq8TQ4Fs17`), `ELEVENLABS_TTS_MODEL` (default `eleven_flash_v2_5`). |
-
-### Logging
-
-Logs are written to `$XDG_CONFIG_HOME/pi-voice/pi-voice.log` (falls back to `~/.config/pi-voice/pi-voice.log`).
-
-To override the log file path:
-
-```bash
-export PI_VOICE_LOG_PATH=/path/to/custom.log
-```
 
 ### Local OpenAI-compatible servers (Kokoro TTS + Whisper STT)
 
-When running local OpenAI-compatible audio services (e.g. Kokoro FastAPI for TTS, hwdsl2/whisper-server for STT), you can point pi-voice at them using separate STT and TTS base URLs:
+Point pi-voice at local OpenAI-compatible audio services by setting the config fields directly in `pi-voice.json`:
 
-```bash
-export OPENAI_STT_BASE_URL=http://localhost:8010
-export OPENAI_TTS_BASE_URL=http://localhost:8011
-export OPENAI_TTS_VOICE=af_heart    # Kokoro voice
-export OPENAI_TTS_MODEL=kokoro
+```json
+{
+  "provider": "openai",
+  "sttBaseUrl": "http://localhost:8010",
+  "ttsBaseUrl": "http://localhost:8011",
+  "sttModel": "whisper-1",
+  "ttsModel": "kokoro",
+  "ttsVoice": "af_heart"
+}
 ```
 
-Set `"provider": "openai"` in your pi-voice config. No API key is needed — pi-voice auto-detects localhost URLs and uses a dummy key.
+No API key is needed — pi-voice auto-detects localhost URLs and uses a dummy key.
 
-You can also use a single shared URL if both services run on the same host:
-
-```bash
-export OPENAI_BASE_URL=http://localhost:8000
-```
+If both services share a single URL, omit `sttBaseUrl`/`ttsBaseUrl` and use `OPENAI_BASE_URL` instead.
 
 ### Whisper model (local provider)
 
