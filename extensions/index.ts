@@ -31,7 +31,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@marioze
 import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
 import { transcribe } from "../src/services/stt.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
-import { getEditableConfigPath, loadConfig, ConfigError, type PiVoiceConfig, updateConfig } from "../src/services/config.js";
+import { getEditableConfigPath, loadConfig, ConfigError, type PiVoiceConfig, updateConfig, type DeliveryMode } from "../src/services/config.js";
 import { resolveModelPath } from "../src/services/whisper-model.js";
 import { isKeyRelease, isKittyProtocolActive, matchesKey, type KeyId } from "@mariozechner/pi-tui";
 import logger from "../src/services/logger.js";
@@ -251,7 +251,9 @@ async function runPipeline(
         // ── Send to active pi session ─────────────────────────────────────
         setStatus(ctx, "thinking…");
         pendingTts = true;
-        pi.sendUserMessage(transcript);
+        pi.sendUserMessage(transcript, {
+          deliverAs: config!.deliveryMode as DeliveryMode,
+        });
         // TTS is handled in the agent_end listener below
 
     } catch (err) {
@@ -518,7 +520,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|eco|enabled|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|eco|enabled|deliveryMode|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -603,7 +605,18 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                if (field === "deliverymode" || field === "delivery-mode" || field === "delivery_mode") {
+                    const mode = value.toLowerCase();
+                    if (!["steer", "followup"].includes(mode)) {
+                        ctx.ui.notify("deliveryMode must be one of: steer, followUp", "warning");
+                        return;
+                    }
+                    config = updateConfig(process.cwd(), { deliveryMode: mode === "steer" ? "steer" : "followUp" });
+                    ctx.ui.notify(`deliveryMode set to ${mode} (${mode === "steer" ? "interrupt" : "queue after current turn"})`, "info");
+                    return;
+                }
+
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -619,6 +632,7 @@ export default function (pi: ExtensionAPI): void {
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
                     `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
+                    `deliveryMode: ${config.deliveryMode} (${config.deliveryMode === "steer" ? "interrupt" : "queue"})`,
                     `sttBaseUrl: ${config.sttBaseUrl ?? "(env/default)"}`,
                     `ttsBaseUrl: ${config.ttsBaseUrl ?? "(env/default)"}`,
                     `sttModel:  ${config.sttModel ?? "(env/default)"}`,
@@ -638,16 +652,17 @@ export default function (pi: ExtensionAPI): void {
                 // Interactive menu loop — mirrors pi's own settings style.
                 while (true) {
                     const choice = await ctx.ui.select("pi-voice settings", [
-                        `shortcut     ${config.shortcut}`,
-                        `provider     ${config.provider}`,
-                        `enabled      ${config.enabled}`,
-                        `tts          ${config.ttsEnabled}`,
-                        `ecoMode      ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
-                        `sttBaseUrl   ${config.sttBaseUrl ?? "(env/default)"}`,
-                        `ttsBaseUrl   ${config.ttsBaseUrl ?? "(env/default)"}`,
-                        `sttModel     ${config.sttModel ?? "(env/default)"}`,
-                        `ttsModel     ${config.ttsModel ?? "(env/default)"}`,
-                        `ttsVoice     ${config.ttsVoice ?? "(env/default)"}`,
+                        `shortcut       ${config.shortcut}`,
+                        `provider       ${config.provider}`,
+                        `enabled        ${config.enabled}`,
+                        `tts            ${config.ttsEnabled}`,
+                        `ecoMode        ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
+                        `deliveryMode   ${config.deliveryMode}`,
+                        `sttBaseUrl     ${config.sttBaseUrl ?? "(env/default)"}`,
+                        `ttsBaseUrl     ${config.ttsBaseUrl ?? "(env/default)"}`,
+                        `sttModel       ${config.sttModel ?? "(env/default)"}`,
+                        `ttsModel       ${config.ttsModel ?? "(env/default)"}`,
+                        `ttsVoice       ${config.ttsVoice ?? "(env/default)"}`,
                         "✓ done",
                     ]);
 
@@ -678,6 +693,11 @@ export default function (pi: ExtensionAPI): void {
                         const val = await ctx.ui.select("Eco mode (concise speech)", ["true", "false"]);
                         if (val !== undefined) {
                             config = updateConfig(process.cwd(), { ecoMode: val === "true" });
+                        }
+                    } else if (choice.startsWith("deliveryMode")) {
+                        const val = await ctx.ui.select("Delivery mode when agent is busy", ["followUp", "steer"]);
+                        if (val) {
+                            config = updateConfig(process.cwd(), { deliveryMode: val as DeliveryMode });
                         }
                     } else if (choice.startsWith("sttBaseUrl")) {
                         const val = await ctx.ui.input(
@@ -740,7 +760,7 @@ export default function (pi: ExtensionAPI): void {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, eco=${config.ecoMode ? "concise" : "full"})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
         },
     });
 }

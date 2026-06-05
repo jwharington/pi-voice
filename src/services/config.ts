@@ -9,6 +9,9 @@ import logger from "./logger.js";
 /** Supported speech provider */
 export type SpeechProvider = "local" | "gemini" | "openai" | "elevenlabs";
 
+/** Controls how voice messages are delivered when the agent is busy */
+export type DeliveryMode = "steer" | "followUp";
+
 export interface PiVoiceConfig {
   /**
   * Pi in-app shortcut string for toggle-to-record (e.g. "f12").
@@ -28,6 +31,13 @@ export interface PiVoiceConfig {
    * Default: true.
    */
   ecoMode: boolean;
+  /**
+   * How voice messages are delivered when the agent is already processing.
+   * - "followUp": queue the message to be processed after the current turn (default)
+   * - "steer": interrupt the current turn with the new message
+   * Default: "followUp".
+   */
+  deliveryMode: DeliveryMode;
   /**
    * OpenAI-compatible base URL for STT (e.g. http://localhost:8010).
    * Falls back to OPENAI_STT_BASE_URL env, then OPENAI_BASE_URL env.
@@ -58,6 +68,7 @@ function defaultConfig(): PiVoiceConfig {
     enabled: true,
     ttsEnabled: true,
     ecoMode: true,
+    deliveryMode: "followUp",
   };
 }
 
@@ -75,6 +86,7 @@ const configFileSchema = z.object({
   enabled: z.boolean().optional().default(true),
   ecoMode: z.boolean().optional().default(true),
   tts: z.boolean().optional().default(true),
+  deliveryMode: z.enum(["steer", "followUp"]).optional().default("followUp"),
   sttBaseUrl: z.string().url().min(1).optional(),
   ttsBaseUrl: z.string().url().min(1).optional(),
   sttModel: z.string().min(1).optional(),
@@ -207,16 +219,17 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     provider: parsed.provider,
     enabled: parsed.enabled,
     ttsEnabled: parsed.tts,
+    ecoMode: parsed.ecoMode ?? true,
+    deliveryMode: parsed.deliveryMode ?? "followUp",
     ...(parsed.sttBaseUrl ? { sttBaseUrl: parsed.sttBaseUrl } : {}),
     ...(parsed.ttsBaseUrl ? { ttsBaseUrl: parsed.ttsBaseUrl } : {}),
     ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
     ...(parsed.ttsModel ? { ttsModel: parsed.ttsModel } : {}),
     ...(parsed.ttsVoice ? { ttsVoice: parsed.ttsVoice } : {}),
-    ecoMode: parsed.ecoMode ?? true,
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "ecoMode" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "ecoMode" | "deliveryMode" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -238,12 +251,13 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       provider: next.provider,
       enabled: next.enabled,
       tts: next.ttsEnabled,
+      ecoMode: next.ecoMode,
+      deliveryMode: next.deliveryMode,
       ...(next.sttBaseUrl ? { sttBaseUrl: next.sttBaseUrl } : {}),
       ...(next.ttsBaseUrl ? { ttsBaseUrl: next.ttsBaseUrl } : {}),
       ...(next.sttModel ? { sttModel: next.sttModel } : {}),
       ...(next.ttsModel ? { ttsModel: next.ttsModel } : {}),
       ...(next.ttsVoice ? { ttsVoice: next.ttsVoice } : {}),
-      ecoMode: next.ecoMode,
     }, null, 2)}\n`,
     "utf-8",
   );
