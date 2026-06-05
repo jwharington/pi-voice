@@ -159,26 +159,52 @@ async function* synthesizeStreamOpenAI(
   const model = options?.ttsModel ?? process.env.OPENAI_TTS_MODEL ?? "gpt-4o-mini-tts";
   const voice = options?.ttsVoice ?? process.env.OPENAI_TTS_VOICE ?? "alloy";
 
-  const response = await client.audio.speech.create({
-    model,
-    voice,
-    input: text,
-    response_format: "pcm", // raw 24kHz 16-bit signed LE mono PCM
-  });
-
-  const arrayBuffer = await response.arrayBuffer();
-  const fullBuffer = Buffer.from(arrayBuffer);
-
   let totalBytes = 0;
-  let offset = 0;
 
-  // Split into fixed-size chunks for smooth streaming playback
-  while (offset < fullBuffer.length) {
-    const end = Math.min(offset + PCM_CHUNK_SIZE, fullBuffer.length);
-    const chunk = fullBuffer.subarray(offset, end);
-    totalBytes += chunk.length;
-    yield chunk;
-    offset = end;
+  // Try streaming endpoint first — starts playback immediately as audio is generated.
+  // Falls back to non-streaming (wait for full buffer) if the server doesn't support streaming.
+  try {
+    const response = await client.audio.speech.create({
+      model,
+      voice,
+      input: text,
+      response_format: "pcm", // raw 24kHz 16-bit signed LE mono PCM
+      stream_format: "audio", // raw audio streaming without SSE wrapper
+    });
+
+    if (!response.body) {
+      throw new Error("No response body");
+    }
+
+    // Stream the response body chunks directly to playback
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const buffer = Buffer.from(value);
+      totalBytes += buffer.length;
+      yield buffer;
+    }
+  } catch {
+    // Server doesn't support streaming — fall back to non-streaming mode
+    const response = await client.audio.speech.create({
+      model,
+      voice,
+      input: text,
+      response_format: "pcm",
+    });
+
+    const arrayBuffer = await response.arrayBuffer();
+    const fullBuffer = Buffer.from(arrayBuffer);
+
+    let offset = 0;
+    while (offset < fullBuffer.length) {
+      const end = Math.min(offset + PCM_CHUNK_SIZE, fullBuffer.length);
+      const chunk = fullBuffer.subarray(offset, end);
+      totalBytes += chunk.length;
+      yield chunk;
+      offset = end;
+    }
   }
 
   logger.info(
