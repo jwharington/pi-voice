@@ -35,19 +35,32 @@ pi-voice runs entirely inside pi — no background daemon needed. Once installed
 1. Press and hold the shortcut (default `f12`) to **start** recording. A spinner and VU meter appear in the status bar.
 2. Release the shortcut to **stop** recording. The transcript is sent to the active pi session.
 3. On terminals without key-release events, pi-voice falls back to press-to-toggle behavior.
-3. pi-voice plays a short click when recording starts and another when recording stops.
-4. If TTS is enabled, pi-voice speaks the agent's response back to you when the turn completes.
+4. pi-voice plays a short click when recording starts and another when recording stops.
+5. If TTS is enabled, pi-voice speaks the agent's response back to you when the turn completes.
+6. **Cancel voice output**: While TTS is speaking, press the shortcut key or **Escape** to stop playback.
+
+### Eco mode
+
+pi-voice's **eco mode** (enabled by default) implements the same lightweight voice interface pattern as [pi-realtime](https://github.com/pi-voice/pi-realtime):
+
+- Your speech is transcribed and sent to Pi for processing
+- Pi handles all the reasoning and work
+- Only the final concise response is spoken back — intermediate tool outputs and reasoning traces are skipped
+- This keeps TTS output focused and concise while the full details remain visible in the Pi TUI
+
+Eco mode reduces TTS cost and keeps the voice interface lean — the voice model stays focused on listening and speaking, Pi remains the source of truth.
 
 ### Commands
 
 | Command | Description |
 | --- | --- |
 | `/voice` | Show current pi-voice status and configuration |
-| `/voice stop` | Cancel an in-progress recording |
+| `/voice stop` | Cancel an in-progress recording or TTS playback |
 | `/voice config` | Print the resolved configuration |
 | `/voice enable` | Enable voice hotkey handling |
 | `/voice disable` | Disable voice hotkey handling |
-| `/voice set <shortcut\|provider\|tts\|enabled\|sttModel\|ttsModel\|ttsVoice\|sttBaseUrl\|ttsBaseUrl> <value>` | Edit and persist pi-voice settings |
+| `/voice set <shortcut\|provider\|tts\|eco\|enabled\|sttModel\|ttsModel\|ttsVoice\|sttBaseUrl\|ttsBaseUrl> <value>` | Edit and persist pi-voice settings |
+| `/voice set eco true|false` | Toggle eco mode (concise/full speech) |
 | `/voice set shortcut <value>` | Update shortcut (restart pi to rebind) |
 
 ## Configuration
@@ -60,6 +73,7 @@ Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.jso
   "provider": "openai",
   "enabled": true,
   "tts": true,
+  "ecoMode": true,
   "sttBaseUrl": "http://localhost:8010",
   "ttsBaseUrl": "http://localhost:8011",
   "sttModel": "whisper-1",
@@ -74,6 +88,7 @@ Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.jso
 | `provider` | Speech provider for STT & TTS. `"local"`, `"gemini"` (Vertex AI or Gemini API), `"openai"`, or `"elevenlabs"`. Default: `"local"`. |
 | `enabled` | Enables or disables voice shortcut handling. Default: `true`. |
 | `tts` | Enable text-to-speech for agent responses. Default: `false`. |
+| `ecoMode` | Eco mode — speak only the final concise response (skip intermediate tool outputs). Default: `true`. |
 | `sttBaseUrl` | OpenAI-compatible base URL for STT (e.g. `http://localhost:8010`). Falls back to `OPENAI_STT_BASE_URL` env, then `OPENAI_BASE_URL` env. |
 | `ttsBaseUrl` | OpenAI-compatible base URL for TTS (e.g. `http://localhost:8011`). Falls back to `OPENAI_TTS_BASE_URL` env, then `OPENAI_BASE_URL` env. |
 | `sttModel` | STT model name. Default: `"whisper-1"`. |

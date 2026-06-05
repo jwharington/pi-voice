@@ -139,10 +139,25 @@ function computePcmLevel(chunk: Buffer): number {
 
 // ── PCM Playback ──────────────────────────────────────────────────────
 
+/** Reference to the active sox playback process for cancellation. */
+let activePlaybackProc: ChildProcessByStdio<Writable, null, Readable> | null = null;
+
+/** Kill the currently running sox playback process. Returns true if a process was active. */
+export function stopPlayback(): boolean {
+  if (activePlaybackProc) {
+    const proc = activePlaybackProc;
+    activePlaybackProc = null;
+    proc.kill("SIGTERM");
+    return true;
+  }
+  return false;
+}
+
 /**
  * Play an async stream of 24kHz 16-bit signed mono PCM chunks through
  * the system's default audio output using `sox`.
  *
+ * Can be cancelled by calling `stopPlayback()` from another context.
  * Resolves when all chunks have been played and sox exits cleanly.
  */
 export async function playPcmStream(
@@ -163,6 +178,7 @@ export async function playPcmStream(
     const proc: ChildProcessByStdio<Writable, null, Readable> = spawn("sox", args, {
         stdio: ["pipe", "ignore", "pipe"],
     });
+    activePlaybackProc = proc;
 
     proc.on("error", (err) => {
         logger.error({ err: err.message }, "sox playback process error");

@@ -28,7 +28,7 @@
  */
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { AudioRecorder, playClick, playPcmStream } from "../src/services/audio.js";
+import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
 import { transcribe } from "../src/services/stt.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
 import { getEditableConfigPath, loadConfig, ConfigError, type PiVoiceConfig, updateConfig } from "../src/services/config.js";
@@ -50,6 +50,7 @@ const SPINNER = ["⠁", "⠂", "⠄", "⠂"];
  * extensions compose transparently.
  */
 const VOICE_HANDLER_SYMBOL = Symbol.for("pi-voice:handleInput");
+const ESCAPE_KEY = "escape"; // key id for Escape key
 
 /** True once the one-time prototype patch has been applied. */
 let protoPatchApplied = false;
@@ -87,6 +88,12 @@ let lastStopTime = 0;
 
 /** Marks the next `agent_end` event as voice-triggered so TTS fires. */
 let pendingTts = false;
+
+/** True while TTS playback is active — pressing the shortcut cancels speech. */
+let isSpeaking = false;
+
+/** AbortController used to cancel in-flight TTS synthesis streams. */
+let ttsAbort: AbortController | null = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -294,6 +301,7 @@ export default function (pi: ExtensionAPI): void {
         stopSpinner(ctx);
         recorder = null;
         pendingTts = false;
+        isSpeaking = false;
         keyPressed = false;
         lastStopTime = 0;
         logger.info("pi-voice extension shut down");
@@ -308,8 +316,26 @@ export default function (pi: ExtensionAPI): void {
         ensureProtoPatch();
 
         Reflect.set(globalThis, VOICE_HANDLER_SYMBOL, (data: string): boolean => {
+            // Cancel voice output with Escape key (always, regardless of config).
+            if (isSpeaking && matchesKey(data, ESCAPE_KEY)) {
+                isSpeaking = false;
+                stopPlayback();
+                ctx.ui.setStatus(STATUS_KEY, "cancelled");
+                setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 1500);
+                return true;
+            }
+
             if (!matchesKey(data, keyId)) return false;
             if (!config?.enabled) return true; // consume but ignore when disabled
+
+            // Cancel voice output if currently speaking (press shortcut to stop TTS).
+            if (isSpeaking && !recorder?.isRecording) {
+                isSpeaking = false;
+                stopPlayback();
+                ctx.ui.setStatus(STATUS_KEY, "cancelled");
+                setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 1500);
+                return true;
+            }
 
             // If release events aren't available, gracefully degrade to toggle mode.
             if (!isKittyProtocolActive()) {
@@ -373,23 +399,32 @@ export default function (pi: ExtensionAPI): void {
 
         if (!config) return;
 
-        // Collect all text content from this agent turn
-        const textSegments: string[] = [];
+        // Collect text content from this agent turn
+        const allTextSegments: string[] = [];
         for (const msg of event.messages) {
             if (msg.role !== "assistant") continue;
             for (const block of msg.content) {
                 if (block.type === "text" && block.text.trim()) {
-                    textSegments.push(block.text.trim());
+                    allTextSegments.push(block.text.trim());
                 }
             }
         }
 
-        if (textSegments.length === 0) {
+        if (allTextSegments.length === 0) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
             return;
         }
 
+        // Eco mode: only speak the final response (concise reply),
+        // not intermediate tool outputs or reasoning.
+        // Matches pi-realtime eco mode where Pi does the work and
+        // the voice interface stays focused on listening and speaking.
+        const textSegments = config.ecoMode
+            ? [allTextSegments[allTextSegments.length - 1]!]
+            : allTextSegments;
+
         setStatus(ctx, "speaking…");
+        isSpeaking = true;
         try {
             if (config.provider === "local") {
                 // macOS `say` command plays directly
@@ -413,17 +448,18 @@ export default function (pi: ExtensionAPI): void {
             logger.error({ err: (err as Error).message }, "TTS error");
             ctx.ui.notify(`TTS error: ${(err as Error).message}`, "warning");
         } finally {
+            isSpeaking = false;
             ctx.ui.setStatus(STATUS_KEY, undefined);
         }
     });
 
     // ── Shortcut registration for discoverability/help overlay ────────
     pi.registerShortcut(config.shortcut.toLowerCase() as KeyId, {
-        description: "Hold-to-talk (press to start, release to send)",
+        description: "Hold-to-talk (press to cancel speech)",
         handler: async (ctx) => {
             // Actual press/release handling uses raw terminal input in session_start.
             // Keep this command as a discoverable keybinding entry in the help UI.
-            ctx.ui.notify("Hold the shortcut to record, release to send", "info");
+            ctx.ui.notify("Hold the shortcut to record, release to send. Press while speaking to cancel.", "info");
         },
     });
 
@@ -436,8 +472,15 @@ export default function (pi: ExtensionAPI): void {
             const action = (actionRaw ?? "status").toLowerCase();
 
             if (action === "stop") {
+                if (isSpeaking) {
+                    isSpeaking = false;
+                    stopPlayback();
+                    ctx.ui.notify("TTS playback stopped", "info");
+                    ctx.ui.setStatus(STATUS_KEY, undefined);
+                    return;
+                }
                 if (!recorder?.isRecording) {
-                    ctx.ui.notify("No active recording", "info");
+                    ctx.ui.notify("No active recording or playback", "info");
                     return;
                 }
                 stopSpinner(ctx);
@@ -475,7 +518,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|enabled|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|eco|enabled|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -514,6 +557,17 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
+                if (field === "eco") {
+                    const parsed = parseBooleanish(value);
+                    if (parsed === undefined) {
+                        ctx.ui.notify("eco must be true/false (or on/off)", "warning");
+                        return;
+                    }
+                    config = updateConfig(process.cwd(), { ecoMode: parsed });
+                    ctx.ui.notify(`ecoMode set to ${parsed} (${parsed ? "concise" : "full"} speech)`, "info");
+                    return;
+                }
+
                 if (field === "sttmodel" || field === "stt-model" || field === "stt_model") {
                     const model = value.trim();
                     config = updateConfig(process.cwd(), { sttModel: model || undefined });
@@ -549,7 +603,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, enabled, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -564,6 +618,7 @@ export default function (pi: ExtensionAPI): void {
                     `provider:  ${config.provider}`,
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
+                    `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                     `sttBaseUrl: ${config.sttBaseUrl ?? "(env/default)"}`,
                     `ttsBaseUrl: ${config.ttsBaseUrl ?? "(env/default)"}`,
                     `sttModel:  ${config.sttModel ?? "(env/default)"}`,
@@ -587,6 +642,7 @@ export default function (pi: ExtensionAPI): void {
                         `provider     ${config.provider}`,
                         `enabled      ${config.enabled}`,
                         `tts          ${config.ttsEnabled}`,
+                        `ecoMode      ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                         `sttBaseUrl   ${config.sttBaseUrl ?? "(env/default)"}`,
                         `ttsBaseUrl   ${config.ttsBaseUrl ?? "(env/default)"}`,
                         `sttModel     ${config.sttModel ?? "(env/default)"}`,
@@ -617,6 +673,11 @@ export default function (pi: ExtensionAPI): void {
                         const val = await ctx.ui.select("TTS enabled", ["true", "false"]);
                         if (val !== undefined) {
                             config = updateConfig(process.cwd(), { ttsEnabled: val === "true" });
+                        }
+                    } else if (choice.startsWith("ecoMode")) {
+                        const val = await ctx.ui.select("Eco mode (concise speech)", ["true", "false"]);
+                        if (val !== undefined) {
+                            config = updateConfig(process.cwd(), { ecoMode: val === "true" });
                         }
                     } else if (choice.startsWith("sttBaseUrl")) {
                         const val = await ctx.ui.input(
@@ -670,12 +731,16 @@ export default function (pi: ExtensionAPI): void {
             }
 
             // Default (no args or "status")
-            const state = recorder?.isRecording ? "🔴 recording" : "idle";
+            const state = recorder?.isRecording
+                ? "🔴 recording"
+                : isSpeaking
+                ? "🔊 speaking"
+                : "idle";
             if (!config) {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, eco=${config.ecoMode ? "concise" : "full"})`, "info");
         },
     });
 }
