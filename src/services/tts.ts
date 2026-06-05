@@ -67,10 +67,18 @@ const PCM_CHUNK_SIZE = TTS_SAMPLE_RATE * (TTS_BITS_PER_SAMPLE / 8) * TTS_CHANNEL
 
 // ── Gemini TTS ───────────────────────────────────────────────────────
 
+interface TtsOptions {
+  ttsBaseUrl?: string;
+  ttsModel?: string;
+  ttsVoice?: string;
+}
+
 async function* synthesizeStreamGemini(
   text: string,
+  options?: TtsOptions,
 ): AsyncGenerator<Buffer, void, undefined> {
   const client = getGeminiClient();
+  const voice = options?.ttsVoice ?? process.env.GEMINI_TTS_VOICE ?? "Aoede";
 
   const response = await client.models.generateContentStream({
     model: "gemini-2.5-flash-preview-tts",
@@ -85,7 +93,7 @@ async function* synthesizeStreamGemini(
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: {
-            voiceName: "Aoede",
+            voiceName: voice,
           },
         },
       },
@@ -140,12 +148,6 @@ async function* synthesizeStreamGemini(
 }
 
 // ── OpenAI TTS ───────────────────────────────────────────────────────
-
-interface TtsOptions {
-  ttsBaseUrl?: string;
-  ttsModel?: string;
-  ttsVoice?: string;
-}
 
 async function* synthesizeStreamOpenAI(
   text: string,
@@ -203,9 +205,10 @@ const DEFAULT_ELEVENLABS_VOICE_ID = "CwhRBWXzGAHq8TQ4Fs17";
 
 async function* synthesizeStreamElevenLabs(
   text: string,
+  options?: TtsOptions,
 ): AsyncGenerator<Buffer, void, undefined> {
   const client = getElevenLabsClient();
-  const voiceId = process.env.ELEVENLABS_VOICE_ID ?? DEFAULT_ELEVENLABS_VOICE_ID;
+  const voiceId = options?.ttsVoice ?? process.env.ELEVENLABS_VOICE_ID ?? DEFAULT_ELEVENLABS_VOICE_ID;
   const modelId = process.env.ELEVENLABS_TTS_MODEL ?? "eleven_flash_v2_5";
 
   // SDK returns a ReadableStream; outputFormat pcm_24000 gives raw 24kHz 16-bit signed LE mono PCM
@@ -248,17 +251,17 @@ async function* synthesizeStreamElevenLabs(
  * Speak text using the macOS `say` command, playing directly through the
  * system's default audio output. Returns a promise that resolves when speech finishes.
  */
-export function speakLocal(text: string): Promise<void> {
+export function speakLocal(text: string, voice?: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (process.platform !== "darwin") {
       reject(new Error("Local TTS (say command) is only supported on macOS"));
       return;
     }
 
-    const voice = process.env.SAY_VOICE;
+    const effectiveVoice = voice ?? process.env.SAY_VOICE;
     const args: string[] = [];
-    if (voice) {
-      args.push("-v", voice);
+    if (effectiveVoice) {
+      args.push("-v", effectiveVoice);
     }
     args.push(text);
 
@@ -284,12 +287,6 @@ export function speakLocal(text: string): Promise<void> {
 
 // ── Public API ───────────────────────────────────────────────────────
 
-interface TtsOptions {
-  ttsBaseUrl?: string;
-  ttsModel?: string;
-  ttsVoice?: string;
-}
-
 /**
  * Convert text to speech using the configured provider (streaming).
  * Yields raw PCM chunks (24kHz, 16-bit, mono) as Buffers.
@@ -313,11 +310,11 @@ export async function* synthesizeStream(
       yield* synthesizeStreamOpenAI(text, options);
       break;
     case "elevenlabs":
-      yield* synthesizeStreamElevenLabs(text);
+      yield* synthesizeStreamElevenLabs(text, options);
       break;
     case "gemini":
     default:
-      yield* synthesizeStreamGemini(text);
+      yield* synthesizeStreamGemini(text, options);
       break;
   }
 }

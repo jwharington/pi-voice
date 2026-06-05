@@ -32,6 +32,7 @@ import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/se
 import { transcribe } from "../src/services/stt.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
 import { createSettingsComponent } from "./settings.js";
+import { getVoicesForProvider } from "../src/services/voices.js";
 import { getEditableConfigPath, loadConfig, ConfigError, type PiVoiceConfig, updateConfig, type DeliveryMode } from "../src/services/config.js";
 import { resolveModelPath } from "../src/services/whisper-model.js";
 import { isKeyRelease, isKittyProtocolActive, matchesKey, type KeyId } from "@mariozechner/pi-tui";
@@ -468,7 +469,7 @@ export default function (pi: ExtensionAPI): void {
             if (config.provider === "local") {
                 // macOS `say` command plays directly
                 for (const seg of segments) {
-                    await speakLocal(seg);
+                    await speakLocal(seg, config.ttsVoice);
                 }
             } else {
                 // Cloud providers: stream PCM to sox for playback
@@ -665,6 +666,30 @@ export default function (pi: ExtensionAPI): void {
                 }
 
                 ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                return;
+            }
+
+            if (action === "voices" || action === "voice-list") {
+                if (!config) {
+                    ctx.ui.notify("pi-voice config not loaded", "warning");
+                    return;
+                }
+                const provider = config.provider;
+                const currentVoice = config.ttsVoice;
+                try {
+                    const voices = await getVoicesForProvider(provider);
+                    if (voices.length === 0) {
+                        ctx.ui.notify(`No voices available for provider '${provider}'`, "warning");
+                        return;
+                    }
+                    const lines = voices.map((v) => {
+                        const isCurrent = currentVoice === v.voiceId ? " ✓" : "";
+                        return `  ${v.voiceName}${isCurrent}`;
+                    });
+                    ctx.ui.notify(`Available voices for ${provider}:\n${lines.join("\n")}\n\nSet with: /voice set ttsVoice <voiceId>`, "info");
+                } catch (err) {
+                    ctx.ui.notify(`Failed to fetch voices: ${(err as Error).message}`, "error");
+                }
                 return;
             }
 
