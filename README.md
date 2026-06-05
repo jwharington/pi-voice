@@ -76,7 +76,7 @@ Configure pi-voice in `.pi/pi-voice.json` (project-level) or `~/.pi/pi-voice.jso
 | --- | --- |
 | `local` | None (model is auto-downloaded on first launch). Optional: `WHISPER_MODEL_PATH` (custom model path), `WHISPER_MODEL` (model name, default `medium-q5_0`), `SAY_VOICE` (macOS `say` voice name, e.g. `"Kyoko"`). |
 | `gemini` | **Vertex AI:** `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` (optional, default `us-central1`). **Gemini API:** `GEMINI_API_KEY` or `GOOGLE_API_KEY`. If `GOOGLE_CLOUD_PROJECT` is set, Vertex AI is used; set `GOOGLE_GENAI_USE_VERTEXAI=false` to force API key mode. |
-| `openai` | `OPENAI_API_KEY`. Optional: `OPENAI_BASE_URL` (for OpenAI-compatible servers like llama.cpp), `OPENAI_STT_MODEL` (default `whisper-1`), `OPENAI_STT_RESPONSE_FORMAT` (default `json`), `OPENAI_STT_PROMPT`, `OPENAI_STT_LANGUAGE`, `OPENAI_STT_TEMPERATURE`. |
+| `openai` | `OPENAI_API_KEY`. Optional: `OPENAI_BASE_URL` (shared STT/TTS base URL), `OPENAI_STT_BASE_URL` (STT-only URL, overrides `OPENAI_BASE_URL`), `OPENAI_TTS_BASE_URL` (TTS-only URL, overrides `OPENAI_BASE_URL`), `OPENAI_STT_MODEL` (default `whisper-1`), `OPENAI_STT_RESPONSE_FORMAT` (default `json`), `OPENAI_STT_PROMPT`, `OPENAI_STT_LANGUAGE`, `OPENAI_STT_TEMPERATURE`, `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`), `OPENAI_TTS_VOICE` (default `alloy`). |
 | `elevenlabs` | `ELEVENLABS_API_KEY`. Optional: `ELEVENLABS_VOICE_ID` (TTS voice, default `CwhRBWXzGAHq8TQ4Fs17`), `ELEVENLABS_TTS_MODEL` (default `eleven_flash_v2_5`). |
 
 ### Logging
@@ -87,6 +87,25 @@ To override the log file path:
 
 ```bash
 export PI_VOICE_LOG_PATH=/path/to/custom.log
+```
+
+### Local OpenAI-compatible servers (Kokoro TTS + Whisper STT)
+
+When running local OpenAI-compatible audio services (e.g. Kokoro FastAPI for TTS, hwdsl2/whisper-server for STT), you can point pi-voice at them using separate STT and TTS base URLs:
+
+```bash
+export OPENAI_STT_BASE_URL=http://localhost:8010
+export OPENAI_TTS_BASE_URL=http://localhost:8011
+export OPENAI_TTS_VOICE=af_heart    # Kokoro voice
+export OPENAI_TTS_MODEL=kokoro
+```
+
+Set `"provider": "openai"` in your pi-voice config. No API key is needed — pi-voice auto-detects localhost URLs and uses a dummy key.
+
+You can also use a single shared URL if both services run on the same host:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8000
 ```
 
 ### Whisper model (local provider)

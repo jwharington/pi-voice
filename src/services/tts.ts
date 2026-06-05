@@ -8,21 +8,36 @@ import logger from "./logger.js";
 // ── OpenAI client ────────────────────────────────────────────────────
 
 let openaiClient: OpenAI | null = null;
+let openAiTtsBaseUrl: string | undefined = undefined;
 
 function getOpenAIClient(): OpenAI {
-  if (openaiClient) return openaiClient;
-  const baseURL = process.env.OPENAI_BASE_URL;
+  // Prefer OPENAI_TTS_BASE_URL; fall back to OPENAI_BASE_URL
+  const ttsBaseUrl = process.env.OPENAI_TTS_BASE_URL ?? process.env.OPENAI_BASE_URL;
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  // Check if the effective base URL is localhost
+  const effectiveBaseUrl = ttsBaseUrl;
   const isLocalhost =
-    baseURL !== undefined &&
-    (baseURL.startsWith("http://localhost") ||
-      baseURL.startsWith("http://127.0.0.1") ||
-      baseURL.startsWith("https://localhost") ||
-      baseURL.startsWith("https://127.0.0.1"));
-  const apiKey = process.env.OPENAI_API_KEY ?? (isLocalhost ? "sk-test" : undefined);
-  if (!apiKey) {
+    effectiveBaseUrl !== undefined &&
+    (effectiveBaseUrl.startsWith("http://localhost") ||
+      effectiveBaseUrl.startsWith("http://127.0.0.1") ||
+      effectiveBaseUrl.startsWith("https://localhost") ||
+      effectiveBaseUrl.startsWith("https://127.0.0.1"));
+
+  const resolvedApiKey = apiKey ?? (isLocalhost ? "sk-test" : undefined);
+  if (!resolvedApiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
-  openaiClient = new OpenAI({ apiKey });
+
+  // Only recreate the client if baseURL changed
+  if (openaiClient && openAiTtsBaseUrl === effectiveBaseUrl) return openaiClient;
+
+  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey: resolvedApiKey };
+  if (effectiveBaseUrl) {
+    clientOptions.baseURL = effectiveBaseUrl;
+  }
+  openAiTtsBaseUrl = effectiveBaseUrl;
+  openaiClient = new OpenAI(clientOptions);
   return openaiClient;
 }
 
@@ -117,9 +132,12 @@ async function* synthesizeStreamOpenAI(
 ): AsyncGenerator<Buffer, void, undefined> {
   const client = getOpenAIClient();
 
+  const model = process.env.OPENAI_TTS_MODEL ?? "gpt-4o-mini-tts";
+  const voice = process.env.OPENAI_TTS_VOICE ?? "alloy";
+
   const response = await client.audio.speech.create({
-    model: "gpt-4o-mini-tts",
-    voice: "alloy",
+    model,
+    voice,
     input: text,
     response_format: "pcm", // raw 24kHz 16-bit signed LE mono PCM
   });

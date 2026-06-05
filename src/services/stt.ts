@@ -8,21 +8,36 @@ import logger from "./logger.js";
 // ── OpenAI client ────────────────────────────────────────────────────
 
 let openaiClient: OpenAI | null = null;
+let openAiBaseUrl: string | undefined = undefined;
 
 function getOpenAIClient(): OpenAI {
-  if (openaiClient) return openaiClient;
-  const baseURL = process.env.OPENAI_BASE_URL;
+  // Prefer OPENAI_STT_BASE_URL; fall back to OPENAI_BASE_URL
+  const sttBaseUrl = process.env.OPENAI_STT_BASE_URL ?? process.env.OPENAI_BASE_URL;
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  // Check if the effective base URL is localhost
+  const effectiveBaseUrl = sttBaseUrl;
   const isLocalhost =
-    baseURL !== undefined &&
-    (baseURL.startsWith("http://localhost") ||
-      baseURL.startsWith("http://127.0.0.1") ||
-      baseURL.startsWith("https://localhost") ||
-      baseURL.startsWith("https://127.0.0.1"));
-  const apiKey = process.env.OPENAI_API_KEY ?? (isLocalhost ? "sk-test" : undefined);
-  if (!apiKey) {
+    effectiveBaseUrl !== undefined &&
+    (effectiveBaseUrl.startsWith("http://localhost") ||
+      effectiveBaseUrl.startsWith("http://127.0.0.1") ||
+      effectiveBaseUrl.startsWith("https://localhost") ||
+      effectiveBaseUrl.startsWith("https://127.0.0.1"));
+
+  const resolvedApiKey = apiKey ?? (isLocalhost ? "sk-test" : undefined);
+  if (!resolvedApiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
-  openaiClient = new OpenAI({ apiKey });
+
+  // Only recreate the client if baseURL changed (e.g. STT vs TTS reuse)
+  if (openaiClient && openAiBaseUrl === effectiveBaseUrl) return openaiClient;
+
+  const clientOptions: { apiKey: string; baseURL?: string } = { apiKey: resolvedApiKey };
+  if (effectiveBaseUrl) {
+    clientOptions.baseURL = effectiveBaseUrl;
+  }
+  openAiBaseUrl = effectiveBaseUrl;
+  openaiClient = new OpenAI(clientOptions);
   return openaiClient;
 }
 
