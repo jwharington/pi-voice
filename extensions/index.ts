@@ -27,10 +27,11 @@
  *   /voice stop     – stop any in-progress recording
  */
 
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from "@mariozechner/pi-coding-agent";
 import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
 import { transcribe } from "../src/services/stt.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
+import { createSettingsComponent } from "./settings.js";
 import { getEditableConfigPath, loadConfig, ConfigError, type PiVoiceConfig, updateConfig, type DeliveryMode } from "../src/services/config.js";
 import { resolveModelPath } from "../src/services/whisper-model.js";
 import { isKeyRelease, isKittyProtocolActive, matchesKey, type KeyId } from "@mariozechner/pi-tui";
@@ -395,48 +396,84 @@ export default function (pi: ExtensionAPI): void {
     });
 
     // ── TTS after agent response ──────────────────────────────────────
-    pi.on("agent_end", async (event, ctx) => {
+
+    /** Accumulates assistant text blocks during an agent turn (for eco mode). */
+    let ttsQueue: string[] = [];
+
+    // Listen for message_end to speak immediately — no waiting for tool execution.
+    pi.on("message_end" as any, async (event: any, ctx: any) => {
+        // Only process assistant messages from voice-triggered turns.
+        if (event.message.role !== "assistant") return;
+
+        const blocks = event.message.content;
+        const textBlocks = blocks
+            .filter((b: any) => b.type === "text" && b.text.trim())
+            .map((b: any) => b.text.trim()) as string[];
+
+        if (textBlocks.length === 0) return;
+
+        // Eco mode: queue messages and speak the last one at agent_end
+        if (config?.ecoMode) {
+            // Clear previous queue on new assistant message (overwrites prior segments)
+            if (pendingTts) {
+                ttsQueue = textBlocks;
+            }
+            return;
+        }
+
+        // Non-eco mode: speak immediately
+        if (!pendingTts) return;
+
+        await speakSegments(textBlocks, ctx);
+    });
+
+    // At agent_end, flush the eco-mode queue (speak the final response).
+    pi.on("agent_end", async (_event, ctx) => {
         if (!pendingTts) return;
         pendingTts = false;
 
-        if (!config) return;
-
-        // Collect text content from this agent turn
-        const allTextSegments: string[] = [];
-        for (const msg of event.messages) {
-            if (msg.role !== "assistant") continue;
-            for (const block of msg.content) {
-                if (block.type === "text" && block.text.trim()) {
-                    allTextSegments.push(block.text.trim());
-                }
-            }
+        // In eco mode, speak the last queued assistant message
+        if (config?.ecoMode && ttsQueue.length > 0) {
+            const queued = ttsQueue;
+            ttsQueue = [];
+            await speakSegments([queued[queued.length - 1]!], ctx);
+            return;
         }
 
-        if (allTextSegments.length === 0) {
+        // Non-eco mode already spoke via message_end; nothing more to do.
+        ttsQueue = [];
+    });
+
+    /** Speak text segments through TTS (handles volume, provider, cancellation). */
+    async function speakSegments(
+        segments: string[],
+        ctx: ExtensionContext,
+    ): Promise<void> {
+        if (!config) return;
+
+        // Volume control: 0.0 disables TTS entirely
+        if (config.volume === 0) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
             return;
         }
 
-        // Eco mode: only speak the final response (concise reply),
-        // not intermediate tool outputs or reasoning.
-        // Matches pi-realtime eco mode where Pi does the work and
-        // the voice interface stays focused on listening and speaking.
-        const textSegments = config.ecoMode
-            ? [allTextSegments[allTextSegments.length - 1]!]
-            : allTextSegments;
+        // If already speaking (e.g. another message arrived), cancel and restart.
+        if (isSpeaking) {
+            stopPlayback();
+        }
 
         setStatus(ctx, "speaking…");
         isSpeaking = true;
         try {
             if (config.provider === "local") {
                 // macOS `say` command plays directly
-                for (const seg of textSegments) {
+                for (const seg of segments) {
                     await speakLocal(seg);
                 }
             } else {
                 // Cloud providers: stream PCM to sox for playback
                 async function* generateChunks(): AsyncIterable<Buffer> {
-                    for (const seg of textSegments) {
+                    for (const seg of segments) {
                         yield* synthesizeStream(seg, config!.provider, {
                             ttsBaseUrl: config!.ttsBaseUrl,
                             ttsModel: config!.ttsModel,
@@ -444,7 +481,7 @@ export default function (pi: ExtensionAPI): void {
                         });
                     }
                 }
-                await playPcmStream(generateChunks());
+                await playPcmStream(generateChunks(), { volume: config.volume });
             }
         } catch (err) {
             logger.error({ err: (err as Error).message }, "TTS error");
@@ -453,7 +490,7 @@ export default function (pi: ExtensionAPI): void {
             isSpeaking = false;
             ctx.ui.setStatus(STATUS_KEY, undefined);
         }
-    });
+    }
 
     // ── Shortcut registration for discoverability/help overlay ────────
     pi.registerShortcut(config.shortcut.toLowerCase() as KeyId, {
@@ -605,6 +642,17 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
+                if (field === "volume") {
+                    const vol = parseFloat(value);
+                    if (isNaN(vol) || vol < 0 || vol > 1) {
+                        ctx.ui.notify("Volume must be a number between 0.0 (muted) and 1.0 (max)", "warning");
+                        return;
+                    }
+                    config = updateConfig(process.cwd(), { volume: vol });
+                    ctx.ui.notify(`Volume set to ${vol} (${vol === 0 ? "muted" : Math.round(vol * 100) + "%"})`, "info");
+                    return;
+                }
+
                 if (field === "deliverymode" || field === "delivery-mode" || field === "delivery_mode") {
                     const mode = value.toLowerCase();
                     if (!["steer", "followup"].includes(mode)) {
@@ -616,7 +664,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -631,6 +679,7 @@ export default function (pi: ExtensionAPI): void {
                     `provider:  ${config.provider}`,
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
+                    `volume:    ${config.volume} (${Math.round(config.volume * 100)}%)`,
                     `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                     `deliveryMode: ${config.deliveryMode} (${config.deliveryMode === "steer" ? "interrupt" : "queue"})`,
                     `sttBaseUrl: ${config.sttBaseUrl ?? "(env/default)"}`,
@@ -649,104 +698,10 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                // Interactive menu loop — mirrors pi's own settings style.
-                while (true) {
-                    const choice = await ctx.ui.select("pi-voice settings", [
-                        `shortcut       ${config.shortcut}`,
-                        `provider       ${config.provider}`,
-                        `enabled        ${config.enabled}`,
-                        `tts            ${config.ttsEnabled}`,
-                        `ecoMode        ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
-                        `deliveryMode   ${config.deliveryMode}`,
-                        `sttBaseUrl     ${config.sttBaseUrl ?? "(env/default)"}`,
-                        `ttsBaseUrl     ${config.ttsBaseUrl ?? "(env/default)"}`,
-                        `sttModel       ${config.sttModel ?? "(env/default)"}`,
-                        `ttsModel       ${config.ttsModel ?? "(env/default)"}`,
-                        `ttsVoice       ${config.ttsVoice ?? "(env/default)"}`,
-                        "✓ done",
-                    ]);
-
-                    if (!choice || choice.startsWith("✓")) break;
-
-                    if (choice.startsWith("shortcut")) {
-                        const val = await ctx.ui.input("Shortcut (e.g. f12, ctrl+t)", config.shortcut);
-                        if (val !== undefined && val.trim()) {
-                            config = updateConfig(process.cwd(), { shortcut: val.trim().toLowerCase() });
-                            ctx.ui.notify("Shortcut updated — restart pi to activate.", "info");
-                        }
-                    } else if (choice.startsWith("provider")) {
-                        const val = await ctx.ui.select("Provider", ["local", "gemini", "openai", "elevenlabs"]);
-                        if (val) {
-                            config = updateConfig(process.cwd(), { provider: val as PiVoiceConfig["provider"] });
-                        }
-                    } else if (choice.startsWith("enabled")) {
-                        const val = await ctx.ui.select("Voice hotkey enabled", ["true", "false"]);
-                        if (val !== undefined) {
-                            config = updateConfig(process.cwd(), { enabled: val === "true" });
-                        }
-                    } else if (choice.startsWith("tts ")) {
-                        const val = await ctx.ui.select("TTS enabled", ["true", "false"]);
-                        if (val !== undefined) {
-                            config = updateConfig(process.cwd(), { ttsEnabled: val === "true" });
-                        }
-                    } else if (choice.startsWith("ecoMode")) {
-                        const val = await ctx.ui.select("Eco mode (concise speech)", ["true", "false"]);
-                        if (val !== undefined) {
-                            config = updateConfig(process.cwd(), { ecoMode: val === "true" });
-                        }
-                    } else if (choice.startsWith("deliveryMode")) {
-                        const val = await ctx.ui.select("Delivery mode when agent is busy", ["followUp", "steer"]);
-                        if (val) {
-                            config = updateConfig(process.cwd(), { deliveryMode: val as DeliveryMode });
-                        }
-                    } else if (choice.startsWith("sttBaseUrl")) {
-                        const val = await ctx.ui.input(
-                            "STT base URL (blank = use OPENAI_BASE_URL env)",
-                            config.sttBaseUrl ?? "",
-                        );
-                        if (val !== undefined) {
-                            const trimmed = val.trim();
-                            config = updateConfig(process.cwd(), { sttBaseUrl: trimmed || undefined });
-                        }
-                    } else if (choice.startsWith("ttsBaseUrl")) {
-                        const val = await ctx.ui.input(
-                            "TTS base URL (blank = use OPENAI_BASE_URL env)",
-                            config.ttsBaseUrl ?? "",
-                        );
-                        if (val !== undefined) {
-                            const trimmed = val.trim();
-                            config = updateConfig(process.cwd(), { ttsBaseUrl: trimmed || undefined });
-                        }
-                    } else if (choice.startsWith("sttModel")) {
-                        const val = await ctx.ui.input(
-                            "STT model (blank = use OPENAI_STT_MODEL env / whisper-1 default)",
-                            config.sttModel ?? "",
-                        );
-                        if (val !== undefined) {
-                            const trimmed = val.trim();
-                            config = updateConfig(process.cwd(), { sttModel: trimmed || undefined });
-                        }
-                    } else if (choice.startsWith("ttsModel")) {
-                        const val = await ctx.ui.input(
-                            "TTS model (blank = use OPENAI_TTS_MODEL env / gpt-4o-mini-tts default)",
-                            config.ttsModel ?? "",
-                        );
-                        if (val !== undefined) {
-                            const trimmed = val.trim();
-                            config = updateConfig(process.cwd(), { ttsModel: trimmed || undefined });
-                        }
-                    } else if (choice.startsWith("ttsVoice")) {
-                        const val = await ctx.ui.input(
-                            "TTS voice (blank = use OPENAI_TTS_VOICE env / alloy default)",
-                            config.ttsVoice ?? "",
-                        );
-                        if (val !== undefined) {
-                            const trimmed = val.trim();
-                            config = updateConfig(process.cwd(), { ttsVoice: trimmed || undefined });
-                        }
-                    }
-                }
-                ctx.ui.notify("Settings saved.", "info");
+                // Show TUI settings menu using Pi's SettingsList component
+                await ctx.ui.custom(
+                    (tui, theme, keybindings, done) => createSettingsComponent(tui, theme, keybindings, done),
+                );
                 return;
             }
 
@@ -760,7 +715,7 @@ export default function (pi: ExtensionAPI): void {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
         },
     });
 }

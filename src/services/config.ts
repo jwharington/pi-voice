@@ -54,6 +54,12 @@ export interface PiVoiceConfig {
   ttsModel?: string;
   /** TTS voice name (default: "alloy") */
   ttsVoice?: string;
+  /**
+   * Volume level for TTS playback (0.0 to 1.0).
+   * 0.0 disables TTS entirely.
+   * Default: 1.0.
+   */
+  volume: number;
 }
 
 // ── Default config ───────────────────────────────────────────────────
@@ -69,6 +75,7 @@ function defaultConfig(): PiVoiceConfig {
     ttsEnabled: true,
     ecoMode: true,
     deliveryMode: "followUp",
+    volume: 1.0,
   };
 }
 
@@ -92,6 +99,7 @@ const configFileSchema = z.object({
   sttModel: z.string().min(1).optional(),
   ttsModel: z.string().min(1).optional(),
   ttsVoice: z.string().min(1).optional(),
+  volume: z.number().min(0).max(1).optional().default(1.0),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -221,6 +229,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     ttsEnabled: parsed.tts,
     ecoMode: parsed.ecoMode ?? true,
     deliveryMode: parsed.deliveryMode ?? "followUp",
+    volume: parsed.volume ?? 1.0,
     ...(parsed.sttBaseUrl ? { sttBaseUrl: parsed.sttBaseUrl } : {}),
     ...(parsed.ttsBaseUrl ? { ttsBaseUrl: parsed.ttsBaseUrl } : {}),
     ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
@@ -229,7 +238,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "ecoMode" | "deliveryMode" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -253,6 +262,7 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       tts: next.ttsEnabled,
       ecoMode: next.ecoMode,
       deliveryMode: next.deliveryMode,
+      volume: next.volume,
       ...(next.sttBaseUrl ? { sttBaseUrl: next.sttBaseUrl } : {}),
       ...(next.ttsBaseUrl ? { ttsBaseUrl: next.ttsBaseUrl } : {}),
       ...(next.sttModel ? { sttModel: next.sttModel } : {}),

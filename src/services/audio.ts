@@ -162,7 +162,9 @@ export function stopPlayback(): boolean {
  */
 export async function playPcmStream(
     chunks: AsyncIterable<Buffer>,
+    options?: { volume?: number },
 ): Promise<void> {
+    const volume = options?.volume ?? 1.0;
     // sox: read raw signed 16-bit LE PCM from stdin, play to default output
     const args = [
         "--type", "raw",
@@ -173,6 +175,7 @@ export async function playPcmStream(
         "--endian", "little",
         "-",          // read from stdin
         "--default",  // play to default output device
+        "vol", String(volume),
     ];
 
     const proc: ChildProcessByStdio<Writable, null, Readable> = spawn("sox", args, {
