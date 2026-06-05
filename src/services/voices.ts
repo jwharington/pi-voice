@@ -7,13 +7,110 @@
 import { spawn } from "node:child_process";
 import logger from "./logger.js";
 
-// ── OpenAI voices (documented, not queryable via API) ────────────────
+// ── OpenAI voices ────────────────────────────────────────────────────
 
-const OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "nova", "sage", "shimmer"];
+/**
+ * Default OpenAI voices (documented by OpenAI).
+ * Used when the API query fails or no base URL is configured.
+ */
+const OPENAI_DEFAULT_VOICES = [
+  { voiceId: "alloy", voiceName: "alloy" },
+  { voiceId: "ash", voiceName: "ash" },
+  { voiceId: "ballad", voiceName: "ballad" },
+  { voiceId: "coral", voiceName: "coral" },
+  { voiceId: "echo", voiceName: "echo" },
+  { voiceId: "nova", voiceName: "nova" },
+  { voiceId: "sage", voiceName: "sage" },
+  { voiceId: "shimmer", voiceName: "shimmer" },
+];
 
-/** Get OpenAI voices (static list). */
-export function getOpenAIVoices(): string[] {
-  return [...OPENAI_VOICES];
+let openAiVoicesCache: Array<{ voiceId: string; voiceName: string }> | null = null;
+
+/**
+ * Resolve the base URL for OpenAI-compatible TTS.
+ * Priority: OPENAI_TTS_BASE_URL env → OPENAI_BASE_URL env → default OpenAI API.
+ */
+function resolveOpenAIBaseUrl(): string | undefined {
+  return process.env.OPENAI_TTS_BASE_URL ?? process.env.OPENAI_BASE_URL;
+}
+
+/**
+ * Resolve the API key for OpenAI-compatible TTS.
+ * Falls back to a dummy key for localhost (many local servers don't require auth).
+ */
+function resolveOpenAIApiKey(): string {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (apiKey) return apiKey;
+  return "sk-test"; // Dummy key for localhost servers that don't require auth
+}
+
+/**
+ * Fetch available voices from an OpenAI-compatible provider.
+ * Queries the /v1/voices endpoint and caches the results.
+ */
+export async function getOpenAIVoices(): Promise<Array<{ voiceId: string; voiceName: string }>> {
+  if (openAiVoicesCache) return openAiVoicesCache;
+
+  const baseUrl = resolveOpenAIBaseUrl();
+  const apiKey = resolveOpenAIApiKey();
+
+  // Only query the API if there's a custom base URL (local OpenAI-compatible server).
+  // Default OpenAI doesn't support querying voices via the API.
+  if (baseUrl) {
+    try {
+      const url = baseUrl.endsWith("/v1")
+        ? `${baseUrl}/voices`
+        : baseUrl.endsWith("/")
+          ? `${baseUrl}v1/voices`
+          : `${baseUrl}/v1/voices`;
+
+      logger.debug({ url }, "Fetching OpenAI-compatible voices");
+      const response = await fetch(url, {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+
+        // Handle various response shapes:
+        // - { voices: [{ id, name }] }
+        // - [{ id, name }] (flat array)
+        // - { data: [{ id, name }] }
+        let voices: Array<{ id?: string; name?: string; voice_id?: string }> = [];
+
+        if (Array.isArray(data)) {
+          voices = data;
+        } else if (Array.isArray(data.voices)) {
+          voices = data.voices;
+        } else if (Array.isArray(data.data)) {
+          voices = data.data;
+        }
+
+        if (voices.length > 0) {
+          const voiceList: Array<{ voiceId: string; voiceName: string }> = voices
+            .map((v) => ({
+              voiceId: v.voice_id ?? v.id ?? "",
+              voiceName: v.name ?? v.voice_id ?? v.id ?? "",
+            }))
+            .filter((v) => v.voiceId);
+
+          openAiVoicesCache = voiceList;
+          logger.info({ count: voiceList.length, url }, "Cached OpenAI voices from API");
+          return voiceList;
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, url: baseUrl }, "Failed to fetch OpenAI voices from API");
+    }
+  }
+
+  // Fall back to default OpenAI voices
+  openAiVoicesCache = [...OPENAI_DEFAULT_VOICES];
+  logger.info({ count: openAiVoicesCache.length }, "Using default OpenAI voices");
+  return openAiVoicesCache;
 }
 
 // ── ElevenLabs voices (queried via REST API) ─────────────────────────
@@ -157,7 +254,7 @@ export async function getVoicesForProvider(
 ): Promise<VoiceInfo[]> {
   switch (provider) {
     case "openai":
-      return getOpenAIVoices().map((voice) => ({ voiceId: voice, voiceName: voice }));
+      return getOpenAIVoices();
     case "gemini":
       return getGeminiVoices().map((voice) => ({ voiceId: voice, voiceName: voice }));
     case "elevenlabs":
