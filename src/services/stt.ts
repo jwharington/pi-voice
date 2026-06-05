@@ -14,6 +14,13 @@ function resolveBaseUrl(configValue?: string): string | undefined {
   return process.env.OPENAI_BASE_URL;
 }
 
+/** OpenAI SDK v6 default base URL includes /v1, so local servers need it too. */
+function ensureV1Prefix(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  if (url.endsWith("/v1")) return url;
+  return url.endsWith("/") ? `${url}v1` : `${url}/v1`;
+}
+
 function resolveApiKey(baseUrl?: string): string | undefined {
   const apiKey = process.env.OPENAI_API_KEY;
   if (apiKey) return apiKey;
@@ -30,16 +37,17 @@ function resolveApiKey(baseUrl?: string): string | undefined {
 }
 
 function getOpenAIClient(baseUrl: string | undefined): OpenAI {
-  const key = baseUrl ?? "__default__";
+  const normalized = ensureV1Prefix(baseUrl);
+  const key = normalized ?? "__default__";
   if (openAiClients.has(key)) return openAiClients.get(key)!;
 
-  const apiKey = resolveApiKey(baseUrl);
+  const apiKey = resolveApiKey(normalized);
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY environment variable is required");
   }
 
   const clientOptions: { apiKey: string; baseURL?: string } = { apiKey };
-  if (baseUrl) clientOptions.baseURL = baseUrl;
+  if (normalized) clientOptions.baseURL = normalized;
 
   const client = new OpenAI(clientOptions);
   openAiClients.set(key, client);
