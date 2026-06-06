@@ -524,7 +524,9 @@ export default function (pi: ExtensionAPI): void {
     let ttsQueue: string[] = [];
 
     // Listen for message_end to speak immediately — no waiting for tool execution.
-    pi.on("message_end" as any, async (event: any, ctx: any) => {
+    // Important: do not await TTS here, otherwise message lifecycle completion can be blocked
+    // and Pi may remain in "working..." until playback completes.
+    pi.on("message_end" as any, (event: any, ctx: any) => {
         // Only process assistant messages from voice-triggered turns.
         if (event.message.role !== "assistant") return;
 
@@ -547,11 +549,12 @@ export default function (pi: ExtensionAPI): void {
         // Non-eco mode: speak immediately
         if (!pendingTts) return;
 
-        await speakSegments(textBlocks, ctx);
+        void speakSegments(textBlocks, ctx);
     });
 
     // At agent_end, flush the eco-mode queue (speak the final response).
-    pi.on("agent_end", async (_event, ctx) => {
+    // Also non-blocking to avoid keeping the session in "working...".
+    pi.on("agent_end", (_event, ctx) => {
         if (!pendingTts) return;
         pendingTts = false;
 
@@ -559,7 +562,7 @@ export default function (pi: ExtensionAPI): void {
         if (config?.ecoMode && ttsQueue.length > 0) {
             const queued = ttsQueue;
             ttsQueue = [];
-            await speakSegments([queued[queued.length - 1]!], ctx);
+            void speakSegments([queued[queued.length - 1]!], ctx);
             return;
         }
 
