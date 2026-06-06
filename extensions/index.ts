@@ -582,13 +582,13 @@ export default function (pi: ExtensionAPI): void {
     /** Accumulates assistant text blocks during an agent turn (for eco mode). */
     let ttsQueue: string[] = [];
 
-    /** Only extract text from assistant messages — skip tool/user/system entirely. */
+    /** Only extract text from assistant messages — skip everything else entirely. */
     function extractAssistantTextBlocks(message: any): string[] {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Strictly require assistant or model role — everything else is excluded.
-        if (role && !["assistant", "model"].includes(role)) return [];
+        // Only allow explicit assistant or model role — reject unknowns, tools, and missing roles.
+        if (role !== "assistant" && role !== "model") return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
