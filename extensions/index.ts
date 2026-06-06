@@ -582,13 +582,27 @@ export default function (pi: ExtensionAPI): void {
     /** Accumulates assistant text blocks during an agent turn (for eco mode). */
     let ttsQueue: string[] = [];
 
-    /** Only extract text from assistant messages — skip everything else entirely. */
+    /**
+     * Assigns a priority score to message roles for TTS selection.
+     * Lower score = higher priority (spoken first).
+     */
+    function getRolePriority(role: string): number {
+        switch (role) {
+            case "assistant": return 1;
+            case "model": return 2;
+            case "agent": return 3;
+            case "unknown": return 4;
+            default: return 4;
+        }
+    }
+
+    /** Extract text for TTS — excludes user, tool, and system roles. */
     function extractAssistantTextBlocks(message: any): string[] {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Only allow explicit assistant or model role — reject unknowns, tools, and missing roles.
-        if (role !== "assistant" && role !== "model") return [];
+        // Exclude known non-assistant roles, but allow assistant, model, agent, or unknown roles.
+        if (role === "user" || role === "tool" || role === "system") return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
@@ -735,12 +749,25 @@ export default function (pi: ExtensionAPI): void {
             if (ttsQueue.length > 0) {
                 finalText = ttsQueue.join("\n\n").trim();
             } else if (Array.isArray(event?.messages)) {
-                const lastAssistant = [...event.messages]
-                    .reverse()
-                    .find((m: any) => m?.role === "assistant");
-                if (lastAssistant) {
-                    const blocks = extractAssistantTextBlocks(lastAssistant);
-                    finalText = blocks.join("\n\n").trim() || undefined;
+                // Build candidates from all speakable messages
+                const candidates = event.messages
+                    .map((m: any) => {
+                        const text = extractAssistantTextBlocks(m);
+                        if (text.length === 0) return null;
+                        const role = typeof m?.role === "string" ? m.role.toLowerCase() : "unknown";
+                        return {
+                            message: m,
+                            blocks: text,
+                            priority: getRolePriority(role),
+                        };
+                    })
+                    .filter((c: any) => c !== null)
+                    .sort((a: any, b: any) => a.priority - b.priority);
+
+                if (candidates.length > 0) {
+                    // Use the highest-priority (lowest score) speakable message
+                    const best = candidates[0];
+                    finalText = best.blocks.join("\n\n").trim() || undefined;
                 }
             } else if (assistantTexts.length > 0) {
                 finalText = assistantTexts.join("\n\n").trim();
