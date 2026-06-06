@@ -675,9 +675,9 @@ export default function (pi: ExtensionAPI): void {
         const textBlocks = extractTextBlocksFromMessage(event?.message);
         if (textBlocks.length === 0) return;
 
-        // Eco mode: queue messages and speak only the final one at agent_end
+        // Eco mode: accumulate assistant text blocks and speak once at agent_end.
         if (config?.ecoMode) {
-            ttsQueue = textBlocks;
+            ttsQueue.push(...textBlocks);
             return;
         }
 
@@ -705,13 +705,12 @@ export default function (pi: ExtensionAPI): void {
                 finalText = ttsQueue.join("\n\n").trim();
                 fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
-                const lastSpeakable = [...event.messages]
-                    .reverse()
-                    .find((m: any) => extractTextBlocksFromMessage(m).length > 0);
-                if (lastSpeakable) {
-                    const blocks = extractTextBlocksFromMessage(lastSpeakable);
-                    finalText = blocks.join("\n\n").trim();
-                    fallbackLastLine = blocks[blocks.length - 1];
+                const allSpeakable = event.messages
+                    .flatMap((m: any) => extractTextBlocksFromMessage(m))
+                    .filter((t: string) => t.trim().length > 0);
+                if (allSpeakable.length > 0) {
+                    finalText = allSpeakable.join("\n\n").trim();
+                    fallbackLastLine = allSpeakable[allSpeakable.length - 1];
                 }
             } else if (assistantTexts.length > 0) {
                 finalText = assistantTexts.join("\n\n").trim();
