@@ -583,7 +583,11 @@ export default function (pi: ExtensionAPI): void {
     let ttsQueue: string[] = [];
 
     function extractTextBlocksFromMessage(message: any): string[] {
-        if (!message || message.role !== "assistant") return [];
+        if (!message) return [];
+
+        const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
+        // Ignore known non-assistant roles, but allow assistant/model or unknown roles.
+        if (role && ["user", "tool", "system"].includes(role)) return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
@@ -597,8 +601,20 @@ export default function (pi: ExtensionAPI): void {
 
         const blocks = Array.isArray(message.content) ? message.content : [];
         const textBlocks = blocks
-            .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
-            .map((b: any) => b.text.trim());
+            .flatMap((b: any) => {
+                // Most common shape: { type: "text", text: string }
+                if (typeof b?.text === "string" && b.text.trim()) {
+                    return [b.text.trim()];
+                }
+                // Alternate shapes: { type: "output_text", content/text/value }
+                if (typeof b?.content === "string" && b.content.trim()) {
+                    return [b.content.trim()];
+                }
+                if (typeof b?.value === "string" && b.value.trim()) {
+                    return [b.value.trim()];
+                }
+                return [];
+            });
 
         if (textBlocks.length > 0) return textBlocks;
 
@@ -689,11 +705,11 @@ export default function (pi: ExtensionAPI): void {
                 finalText = ttsQueue.join("\n\n").trim();
                 fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
-                const lastAssistant = [...event.messages]
+                const lastSpeakable = [...event.messages]
                     .reverse()
-                    .find((m: any) => m?.role === "assistant");
-                if (lastAssistant) {
-                    const blocks = extractTextBlocksFromMessage(lastAssistant);
+                    .find((m: any) => extractTextBlocksFromMessage(m).length > 0);
+                if (lastSpeakable) {
+                    const blocks = extractTextBlocksFromMessage(lastSpeakable);
                     finalText = blocks.join("\n\n").trim();
                     fallbackLastLine = blocks[blocks.length - 1];
                 }
@@ -709,6 +725,8 @@ export default function (pi: ExtensionAPI): void {
             } else if (fallbackLastLine?.trim()) {
                 // Safety fallback to keep eco TTS alive on odd payloads.
                 void speakSegments([fallbackLastLine.trim()], ctx);
+            } else {
+                logger.warn({ eventHasMessages: Array.isArray(event?.messages) }, "No speakable text found for eco TTS");
             }
             return;
         }
@@ -717,6 +735,8 @@ export default function (pi: ExtensionAPI): void {
         ttsQueue = [];
         if (!spokeViaMessageEnd && assistantTexts.length > 0) {
             void speakSegments(assistantTexts, ctx);
+        } else if (!spokeViaMessageEnd) {
+            logger.warn({ eventHasMessages: Array.isArray(event?.messages) }, "No speakable text found for non-eco TTS");
         }
         spokeViaMessageEnd = false;
     });
