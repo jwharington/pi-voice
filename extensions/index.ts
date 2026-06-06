@@ -589,8 +589,8 @@ export default function (pi: ExtensionAPI): void {
     function getRolePriority(role: string): number {
         switch (role) {
             case "assistant": return 1;
-            case "model": return 2;
-            case "agent": return 3;
+            case "agent": return 2;
+            case "model": return 3;
             case "unknown": return 4;
             default: return 4;
         }
