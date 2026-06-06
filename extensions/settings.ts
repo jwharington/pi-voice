@@ -55,6 +55,10 @@ export async function createSettingsComponent(
       case "inputMode":
         patch.inputMode = newValue as PiVoiceConfig["inputMode"];
         break;
+      case "ttsVerbosity":
+        const v = parseInt(newValue, 10);
+        if (!isNaN(v) && v >= 1 && v <= 3) patch.ttsVerbosity = v;
+        break;
       case "volume":
         const vol = parseFloat(newValue.replace("%", "")) / 100;
         if (!isNaN(vol)) patch.volume = Math.max(0, Math.min(1, vol));
@@ -161,6 +165,13 @@ export async function createSettingsComponent(
       description: "How final transcript is delivered",
       currentValue: config.inputMode,
       values: ["draft", "autoSend"],
+    },
+    {
+      id: "ttsVerbosity",
+      label: "TTS Verbosity",
+      description: "1: assistant only | 2: assistant+agent | 3: all",
+      currentValue: String(config.ttsVerbosity),
+      values: ["1", "2", "3"],
     },
     {
       id: "volume",

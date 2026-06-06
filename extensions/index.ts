@@ -596,14 +596,24 @@ export default function (pi: ExtensionAPI): void {
         }
     }
 
-    /** Extract text for TTS — excludes user, tool, and system roles. */
+    /** Extract text for TTS — filters by verbosity config. */
     function extractAssistantTextBlocks(message: any): string[] {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Exclude user, tool, and system roles. Model is allowed but has lowest priority (3).
+        // Always exclude user, tool, and system.
         if (role === "user" || role === "tool" || role === "system") return [];
 
+        const verbosity = config?.ttsVerbosity ?? 1;
+        // Filter by verbosity: 1 = assistant only, 2 = assistant+agent, 3 = +model
+        if (role === "assistant" && verbosity >= 1) return extractRawText(message);
+        if (role === "agent" && verbosity >= 2) return extractRawText(message);
+        if (role === "model" && verbosity >= 3) return extractRawText(message);
+        if (!role && verbosity >= 4) return extractRawText(message);
+        return [];
+    }
+
+    function extractRawText(message: any): string[] {
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
             return [message.content.trim()];
@@ -635,7 +645,7 @@ export default function (pi: ExtensionAPI): void {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        if (role && ["user", "tool", "system"].includes(role)) return [];
+        if (role === "user" || role === "tool" || role === "system") return [];
 
         if (typeof message.content === "string" && message.content.trim()) {
             return [message.content.trim()];
@@ -939,7 +949,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|inputMode|eco|enabled|deliveryMode|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|inputMode|eco|enabled|deliveryMode|verbosity|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -987,6 +997,17 @@ export default function (pi: ExtensionAPI): void {
                     const normalized = mode === "draft" ? "draft" : "autoSend";
                     config = updateConfig(process.cwd(), { inputMode: normalized });
                     ctx.ui.notify(`inputMode set to ${normalized}`, "info");
+                    return;
+                }
+
+                if (field === "verbosity" || field === "ttsverbosity" || field === "tts-verbosity") {
+                    const num = parseInt(value, 10);
+                    if (isNaN(num) || num < 1 || num > 3) {
+                        ctx.ui.notify("ttsVerbosity must be 1, 2, or 3", "warning");
+                        return;
+                    }
+                    config = updateConfig(process.cwd(), { ttsVerbosity: num });
+                    ctx.ui.notify(`ttsVerbosity set to ${num}`, "info");
                     return;
                 }
 
@@ -1058,7 +1079,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, inputMode, eco, enabled, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, inputMode, eco, enabled, verbosity, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -1098,6 +1119,7 @@ export default function (pi: ExtensionAPI): void {
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
                     `inputMode: ${config.inputMode}`,
+                    `verbosity: ${config.ttsVerbosity}`,
                     `volume:    ${config.volume} (${Math.round(config.volume * 100)}%)`,
                     `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                     `deliveryMode: ${config.deliveryMode} (${config.deliveryMode === "steer" ? "interrupt" : "queue"})`,
@@ -1138,7 +1160,7 @@ export default function (pi: ExtensionAPI): void {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, inputMode=${config.inputMode}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, inputMode=${config.inputMode}, verbosity=${config.ttsVerbosity}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
         },
     });
 }

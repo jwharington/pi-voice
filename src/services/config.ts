@@ -70,6 +70,12 @@ export interface PiVoiceConfig {
    * Default: 1.0.
    */
   volume: number;
+  /**
+   * Controls which message roles are spoken.
+   * 1 = only assistant, 2 = assistant + agent, 3 = assistant + agent + model.
+   * Default: 1.
+   */
+  ttsVerbosity: number;
 }
 
 // ── Default config ───────────────────────────────────────────────────
@@ -87,6 +93,7 @@ function defaultConfig(): PiVoiceConfig {
     ecoMode: true,
     deliveryMode: "followUp",
     volume: 1.0,
+    ttsVerbosity: 1,
   };
 }
 
@@ -112,6 +119,7 @@ const configFileSchema = z.object({
   ttsModel: z.string().min(1).optional(),
   ttsVoice: z.string().min(1).optional(),
   volume: z.number().min(0).max(1).optional().default(1.0),
+  ttsVerbosity: z.number().int().min(1).max(3).optional().default(1),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -245,6 +253,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     ecoMode: parsed.ecoMode ?? true,
     deliveryMode: parsed.deliveryMode ?? "followUp",
     volume: parsed.volume ?? 1.0,
+    ttsVerbosity: parsed.ttsVerbosity ?? 1,
     ...(parsed.sttBaseUrl ? { sttBaseUrl: parsed.sttBaseUrl } : {}),
     ...(parsed.ttsBaseUrl ? { ttsBaseUrl: parsed.ttsBaseUrl } : {}),
     ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
@@ -253,7 +262,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "inputMode" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "inputMode" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice" | "ttsVerbosity">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -284,6 +293,7 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       ...(next.sttModel ? { sttModel: next.sttModel } : {}),
       ...(next.ttsModel ? { ttsModel: next.ttsModel } : {}),
       ...(next.ttsVoice ? { ttsVoice: next.ttsVoice } : {}),
+      ...(next.ttsVerbosity ? { ttsVerbosity: next.ttsVerbosity } : {}),
     }, null, 2)}\n`,
     "utf-8",
   );
