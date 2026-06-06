@@ -675,9 +675,12 @@ export default function (pi: ExtensionAPI): void {
         const textBlocks = extractTextBlocksFromMessage(event?.message);
         if (textBlocks.length === 0) return;
 
-        // Eco mode: accumulate assistant text blocks and speak once at agent_end.
+        // Eco mode: accumulate assistant text blocks for agent_end.
         if (config?.ecoMode) {
-            ttsQueue.push(...textBlocks);
+            // Only accumulate from assistant messages (skip tool/system)
+            if (event?.message?.role === "assistant") {
+                ttsQueue.push(...textBlocks);
+            }
             return;
         }
 
@@ -693,7 +696,9 @@ export default function (pi: ExtensionAPI): void {
         pendingTts = false;
 
         const assistantTexts = Array.isArray(event?.messages)
-            ? event.messages.flatMap((m: any) => extractTextBlocksFromMessage(m))
+            ? event.messages
+                .filter((m: any) => m?.role === "assistant")
+                .flatMap((m: any) => extractTextBlocksFromMessage(m))
             : [];
 
         if (config?.ecoMode) {
@@ -705,7 +710,11 @@ export default function (pi: ExtensionAPI): void {
                 finalText = ttsQueue.join("\n\n").trim();
                 fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
-                const allSpeakable = event.messages
+                // Only collect assistant messages (ignore tool outputs)
+                const assistants = event.messages.filter(
+                    (m: any) => m?.role === "assistant"
+                );
+                const allSpeakable = assistants
                     .flatMap((m: any) => extractTextBlocksFromMessage(m))
                     .filter((t: string) => t.trim().length > 0);
                 if (allSpeakable.length > 0) {
