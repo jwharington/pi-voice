@@ -852,6 +852,10 @@ export default function (pi: ExtensionAPI): void {
                 await ctx.ui.custom(
                     (tui, theme, keybindings, done) => createSettingsComponent(tui, theme, keybindings, done),
                 );
+
+                // Reload runtime config after settings close so enable/disable and
+                // other toggles apply immediately without restarting Pi.
+                config = loadConfig(process.cwd());
                 return;
             }
 
