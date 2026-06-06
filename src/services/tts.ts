@@ -160,6 +160,7 @@ async function* synthesizeStreamOpenAI(
   const voice = options?.ttsVoice ?? process.env.OPENAI_TTS_VOICE ?? "alloy";
 
   let totalBytes = 0;
+  let streamingSuccess = false;
 
   // Try streaming endpoint first — starts playback immediately as audio is generated.
   // Falls back to non-streaming (wait for full buffer) if the server doesn't support streaming.
@@ -184,6 +185,11 @@ async function* synthesizeStreamOpenAI(
       const buffer = Buffer.from(value);
       totalBytes += buffer.length;
       yield buffer;
+      streamingSuccess = true;
+    }
+
+    if (!streamingSuccess) {
+      throw new Error("Streaming produced 0 bytes");
     }
   } catch {
     // Server doesn't support streaming — fall back to non-streaming mode
@@ -196,6 +202,10 @@ async function* synthesizeStreamOpenAI(
 
     const arrayBuffer = await response.arrayBuffer();
     const fullBuffer = Buffer.from(arrayBuffer);
+
+    if (fullBuffer.length === 0) {
+      throw new Error(`TTS server returned 0 bytes for text: "${text.substring(0, 50)}..."`);
+    }
 
     let offset = 0;
     while (offset < fullBuffer.length) {
@@ -211,6 +221,7 @@ async function* synthesizeStreamOpenAI(
     { provider: "openai", totalBytes, text: text.substring(0, 50) },
     "Streamed PCM audio",
   );
+
 }
 
 // ── ElevenLabs TTS ───────────────────────────────────────────────────
