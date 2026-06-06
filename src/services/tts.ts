@@ -149,6 +149,31 @@ async function* synthesizeStreamGemini(
 
 // ── OpenAI TTS ───────────────────────────────────────────────────────
 
+
+/** Decode MP3 buffer to PCM using ffmpeg. */
+async function decodeMp3ToPcm(mp3Buffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn("ffmpeg", ["-y", "-i", "pipe:0", "-f", "s16le", "-ar", "24000", "-ac", "1", "pipe:1"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const chunks: Buffer[] = [];
+    ffmpeg.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    ffmpeg.stderr.on("data", () => {}); // Ignore stderr
+    ffmpeg.on("error", (err) => reject(new Error(`Failed to spawn ffmpeg: ${err.message}`)));
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}`));
+      }
+    });
+
+    ffmpeg.stdin.write(mp3Buffer);
+    ffmpeg.stdin.end();
+  });
+}
+
 async function* synthesizeStreamOpenAI(
   text: string,
   options?: TtsOptions,
@@ -160,60 +185,81 @@ async function* synthesizeStreamOpenAI(
   const voice = options?.ttsVoice ?? process.env.OPENAI_TTS_VOICE ?? "alloy";
 
   let totalBytes = 0;
-  let streamingSuccess = false;
 
-  // Try streaming endpoint first — starts playback immediately as audio is generated.
-  // Falls back to non-streaming (wait for full buffer) if the server doesn't support streaming.
+  // Try streaming PCM first — starts playback immediately as audio is generated.
+  // Falls back to non-streaming PCM, then MP3 (decoded to PCM) if server doesn't support PCM.
   try {
     const response = await client.audio.speech.create({
       model,
       voice,
       input: text,
-      response_format: "pcm", // raw 24kHz 16-bit signed LE mono PCM
-      stream_format: "audio", // raw audio streaming without SSE wrapper
+      response_format: "pcm",
+      stream_format: "audio",
     });
 
     if (!response.body) {
       throw new Error("No response body");
     }
 
-    // Stream the response body chunks directly to playback
     const reader = response.body.getReader();
+    let streamingBytes = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       const buffer = Buffer.from(value);
-      totalBytes += buffer.length;
+      streamingBytes += buffer.length;
       yield buffer;
-      streamingSuccess = true;
     }
 
-    if (!streamingSuccess) {
+    if (streamingBytes === 0) {
       throw new Error("Streaming produced 0 bytes");
     }
+    totalBytes = streamingBytes;
   } catch {
-    // Server doesn't support streaming — fall back to non-streaming mode
-    const response = await client.audio.speech.create({
+    // Fall back to non-streaming PCM, then MP3
+    const pcmResponse = await client.audio.speech.create({
       model,
       voice,
       input: text,
       response_format: "pcm",
     });
 
-    const arrayBuffer = await response.arrayBuffer();
-    const fullBuffer = Buffer.from(arrayBuffer);
+    const arrayBuffer = await pcmResponse.arrayBuffer();
+    const pcmBuffer = Buffer.from(arrayBuffer);
 
-    if (fullBuffer.length === 0) {
-      throw new Error(`TTS server returned 0 bytes for text: "${text.substring(0, 50)}..."`);
-    }
+    if (pcmBuffer.length > 0) {
+      let offset = 0;
+      while (offset < pcmBuffer.length) {
+        const end = Math.min(offset + PCM_CHUNK_SIZE, pcmBuffer.length);
+        const chunk = pcmBuffer.subarray(offset, end);
+        totalBytes += chunk.length;
+        yield chunk;
+        offset = end;
+      }
+    } else {
+      // Server doesn't support PCM — fall back to MP3 and decode to PCM
+      const mp3Response = await client.audio.speech.create({
+        model,
+        voice,
+        input: text,
+        response_format: "mp3",
+      });
 
-    let offset = 0;
-    while (offset < fullBuffer.length) {
-      const end = Math.min(offset + PCM_CHUNK_SIZE, fullBuffer.length);
-      const chunk = fullBuffer.subarray(offset, end);
-      totalBytes += chunk.length;
-      yield chunk;
-      offset = end;
+      const mp3Buffer = Buffer.from(await mp3Response.arrayBuffer());
+      if (mp3Buffer.length === 0) {
+        throw new Error(`TTS server returned 0 bytes for text: "${text.substring(0, 50)}..."`);
+      }
+
+      // Decode MP3 to PCM using ffmpeg/sox
+      const decoded = await decodeMp3ToPcm(mp3Buffer);
+      let offset = 0;
+      while (offset < decoded.length) {
+        const end = Math.min(offset + PCM_CHUNK_SIZE, decoded.length);
+        const chunk = decoded.subarray(offset, end);
+        totalBytes += chunk.length;
+        yield chunk;
+        offset = end;
+      }
     }
   }
 
