@@ -163,6 +163,16 @@ function renderInterimTranscriptInPrompt(ctx: ExtensionContext): void {
     interimPreviewActive = true;
 }
 
+function showMicListeningIndicatorInPrompt(ctx: ExtensionContext): void {
+    if (interimPreviewActive || intermediateTranscript.trim()) return;
+    const sep =
+        editorTextBeforeRecording.length > 0 && !editorTextBeforeRecording.endsWith(" ")
+            ? " "
+            : "";
+    ctx.ui.setEditorText(`${editorTextBeforeRecording}${sep}🎤 …`);
+    interimPreviewActive = true;
+}
+
 function clearInterimTranscriptFromPrompt(ctx: ExtensionContext): void {
     if (!interimPreviewActive) return;
     ctx.ui.setEditorText(editorTextBeforeRecording);
@@ -284,6 +294,7 @@ function createVadCallbacks(ctx: ExtensionContext): VadCallbacks {
     return {
         onSpeechStart: () => {
             logger.debug("VAD: speech started");
+            showMicListeningIndicatorInPrompt(ctx);
         },
         onSpeechEnd: () => {
             logger.debug("VAD: speech ended");
