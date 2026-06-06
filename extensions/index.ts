@@ -582,12 +582,13 @@ export default function (pi: ExtensionAPI): void {
     /** Accumulates assistant text blocks during an agent turn (for eco mode). */
     let ttsQueue: string[] = [];
 
-    function extractTextBlocksFromMessage(message: any): string[] {
+    /** Only extract text from assistant messages — skip tool/user/system entirely. */
+    function extractAssistantTextBlocks(message: any): string[] {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Ignore known non-assistant roles, but allow assistant/model or unknown roles.
-        if (role && ["user", "tool", "system"].includes(role)) return [];
+        // Strictly require assistant or model role — everything else is excluded.
+        if (role && !["assistant", "model"].includes(role)) return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
@@ -601,12 +602,41 @@ export default function (pi: ExtensionAPI): void {
 
         const blocks = Array.isArray(message.content) ? message.content : [];
         const textBlocks = blocks
+            .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
+            .map((b: any) => b.text.trim());
+
+        if (textBlocks.length > 0) return textBlocks;
+
+        // Last-resort fallback: stringify unknown content shape.
+        if (message.content && !Array.isArray(message.content)) {
+            const raw = String(message.content).trim();
+            if (raw) return [raw];
+        }
+
+        return [];
+    }
+
+    /** Legacy fallback — extract text from any non-user message (for non-eco paths). */
+    function extractTextBlocksFromMessage(message: any): string[] {
+        if (!message) return [];
+
+        const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
+        if (role && ["user", "tool", "system"].includes(role)) return [];
+
+        if (typeof message.content === "string" && message.content.trim()) {
+            return [message.content.trim()];
+        }
+
+        if (typeof message.text === "string" && message.text.trim()) {
+            return [message.text.trim()];
+        }
+
+        const blocks = Array.isArray(message.content) ? message.content : [];
+        const textBlocks = blocks
             .flatMap((b: any) => {
-                // Most common shape: { type: "text", text: string }
                 if (typeof b?.text === "string" && b.text.trim()) {
                     return [b.text.trim()];
                 }
-                // Alternate shapes: { type: "output_text", content/text/value }
                 if (typeof b?.content === "string" && b.content.trim()) {
                     return [b.content.trim()];
                 }
@@ -618,7 +648,6 @@ export default function (pi: ExtensionAPI): void {
 
         if (textBlocks.length > 0) return textBlocks;
 
-        // Last-resort fallback: stringify unknown content shape so TTS still has something.
         if (message.content && !Array.isArray(message.content)) {
             const raw = String(message.content).trim();
             if (raw) return [raw];
@@ -672,15 +701,12 @@ export default function (pi: ExtensionAPI): void {
     pi.on("message_end" as any, (event: any, ctx: any) => {
         if (!pendingTts) return;
 
-        const textBlocks = extractTextBlocksFromMessage(event?.message);
+        const textBlocks = extractAssistantTextBlocks(event?.message);
         if (textBlocks.length === 0) return;
 
         // Eco mode: accumulate assistant text blocks for agent_end.
         if (config?.ecoMode) {
-            // Only accumulate from assistant messages (skip tool/system)
-            if (event?.message?.role === "assistant") {
-                ttsQueue.push(...textBlocks);
-            }
+            ttsQueue.push(...textBlocks);
             return;
         }
 
@@ -698,7 +724,7 @@ export default function (pi: ExtensionAPI): void {
         const assistantTexts = Array.isArray(event?.messages)
             ? event.messages
                 .filter((m: any) => m?.role === "assistant")
-                .flatMap((m: any) => extractTextBlocksFromMessage(m))
+                .flatMap((m: any) => extractAssistantTextBlocks(m))
             : [];
 
         if (config?.ecoMode) {
@@ -710,12 +736,9 @@ export default function (pi: ExtensionAPI): void {
                 finalText = ttsQueue.join("\n\n").trim();
                 fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
-                // Only collect assistant messages (ignore tool outputs)
-                const assistants = event.messages.filter(
-                    (m: any) => m?.role === "assistant"
-                );
-                const allSpeakable = assistants
-                    .flatMap((m: any) => extractTextBlocksFromMessage(m))
+                // Strictly collect assistant messages only (ignore tool outputs)
+                const allSpeakable = event.messages
+                    .flatMap((m: any) => extractAssistantTextBlocks(m))
                     .filter((t: string) => t.trim().length > 0);
                 if (allSpeakable.length > 0) {
                     finalText = allSpeakable.join("\n\n").trim();
