@@ -287,7 +287,11 @@ async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<
                 },
                 onDone: (text) => {
                     if (text.trim()) {
-                        intermediateTranscript = text;
+                        if (intermediateTranscript.trim()) {
+                            intermediateTranscript += " " + text;
+                        } else {
+                            intermediateTranscript = text;
+                        }
                         logger.info({ transcript: text }, "Intermediate transcription ready");
                     }
                 },
@@ -317,58 +321,28 @@ async function runPipeline(
     }
 
     try {
+        // Flush any remaining VAD buffer (speech that ended without a trailing pause)
+        vadRef?.flush();
+
         let transcript: string;
 
-        // Flush remaining audio from VAD (speech that ended without a trailing pause)
-        const remaining = vadProcessor?.flush() ?? null;
+        // Transcribe the full recording for the authoritative final result.
+        // VAD intermediate results were already shown during recording;
+        // the full transcription is more accurate (handles segment boundaries).
+        setStatus(ctx, "transcribing…");
+        transcript = await transcribeStreaming(
+            pcm.buffer as ArrayBuffer,
+            config.provider,
+            {
+                sttModel: config.sttModel,
+                sttBaseUrl: config.sttBaseUrl,
+            },
+            {},
+        );
 
-        if (remaining && remaining.byteLength >= 1600) {
-            // There's remaining speech that VAD didn't fire an utterance for
-            // Transcribe it and append to intermediate results
-            setStatus(ctx, "transcribing…");
-            const remainingText = await transcribeStreaming(
-                remaining.buffer as ArrayBuffer,
-                config.provider,
-                {
-                    sttModel: config.sttModel,
-                    sttBaseUrl: config.sttBaseUrl,
-                },
-                {},
-            );
-
-            if (remainingText.trim() && intermediateTranscript.trim()) {
-                transcript = intermediateTranscript + " " + remainingText;
-            } else if (remainingText.trim()) {
-                transcript = remainingText;
-            } else {
-                transcript = intermediateTranscript;
-            }
-        } else if (intermediateTranscript.trim()) {
-            // We already have intermediate results from VAD-detected utterances
-            // Transcribe the full buffer for the authoritative final result
-            setStatus(ctx, "transcribing…");
-            const finalText = await transcribeStreaming(
-                pcm.buffer as ArrayBuffer,
-                config.provider,
-                {
-                    sttModel: config.sttModel,
-                    sttBaseUrl: config.sttBaseUrl,
-                },
-                {},
-            );
-            transcript = finalText.trim() || intermediateTranscript;
-        } else {
-            // No intermediate results — fall back to full transcription
-            setStatus(ctx, "transcribing…");
-            transcript = await transcribeStreaming(
-                pcm.buffer as ArrayBuffer,
-                config.provider,
-                {
-                    sttModel: config.sttModel,
-                    sttBaseUrl: config.sttBaseUrl,
-                },
-                {},
-            );
+        // Fall back to accumulated VAD results if the full transcription is empty
+        if (!transcript.trim() && intermediateTranscript.trim()) {
+            transcript = intermediateTranscript;
         }
 
         // Reset intermediate state for next recording

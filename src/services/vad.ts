@@ -29,6 +29,12 @@ export interface VadConfig {
    * Default: 0.3.
    */
   smoothing?: number;
+  /**
+   * Maximum speech duration (ms) before triggering an utterance even without a pause.
+   * Prevents long continuous speech from blocking progressive transcription.
+   * Default: 3000ms (3 seconds).
+   */
+  maxSpeechDurationMs?: number;
 }
 
 export interface VadCallbacks {
@@ -59,6 +65,7 @@ export class VadProcessor {
       silenceThresholdMs: config.silenceThresholdMs ?? 800,
       speechThreshold: config.speechThreshold ?? 0.03,
       smoothing: config.smoothing ?? 0.3,
+      maxSpeechDurationMs: config.maxSpeechDurationMs ?? 3000,
     };
     this.callbacks = callbacks;
   }
@@ -97,6 +104,20 @@ export class VadProcessor {
     // In speech
     this.buffer.push(chunk);
     this.sampleCount += sampleCount;
+
+    // Time-based fallback: if speech has been going for too long without a pause,
+    // fire the utterance anyway so the user gets progressive results.
+    const speechDuration = now - this.speechStartTime;
+    if (speechDuration >= this.config.maxSpeechDurationMs && this.buffer.length > 0) {
+      const utterance = Buffer.concat(this.buffer);
+      this.buffer = [];
+      // Reset speech timer — start fresh for the next segment
+      this.speechStartTime = now;
+      this.callbacks.onSpeechEnd?.();
+      this.callbacks.onUtteranceReady(utterance);
+      // Stay in speech mode — continue collecting
+      return;
+    }
 
     if (this.smoothedLevel < this.config.speechThreshold) {
       // Speech → silence transition
