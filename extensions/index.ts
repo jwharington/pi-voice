@@ -433,7 +433,6 @@ export default function (pi: ExtensionAPI): void {
     });
 
     pi.on("session_start", (_event, ctx) => {
-        const keyId = config!.shortcut.toLowerCase() as KeyId;
         activePi = pi;
 
         // Patch CustomEditor.prototype.handleInput once so the voice handler
@@ -451,7 +450,8 @@ export default function (pi: ExtensionAPI): void {
                 return true;
             }
 
-            if (!matchesKey(data, keyId)) return false;
+            const keyId = config?.shortcut.toLowerCase() as KeyId | undefined;
+            if (!keyId || !matchesKey(data, keyId)) return false;
             if (!config?.enabled) return true; // consume but ignore when disabled
 
             // Cancel voice output if currently speaking (press shortcut to stop TTS).
@@ -692,7 +692,7 @@ export default function (pi: ExtensionAPI): void {
 
                 if (field === "shortcut") {
                     config = updateConfig(process.cwd(), { shortcut: value.toLowerCase() });
-                    ctx.ui.notify("Shortcut updated. Restart pi to apply new shortcut binding.", "info");
+                    ctx.ui.notify("Shortcut updated and applied immediately.", "info");
                     return;
                 }
 
