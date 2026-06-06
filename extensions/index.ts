@@ -601,8 +601,8 @@ export default function (pi: ExtensionAPI): void {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Exclude known non-assistant roles, but allow assistant, model, agent, or unknown roles.
-        if (role === "user" || role === "tool" || role === "system") return [];
+        // Exclude user, tool, system, and raw model outputs.
+        if (role === "user" || role === "tool" || role === "system" || role === "model") return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
