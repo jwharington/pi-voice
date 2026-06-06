@@ -621,11 +621,22 @@ export default function (pi: ExtensionAPI): void {
             : [];
 
         if (config?.ecoMode) {
-            const finalText = ttsQueue.length > 0
-                ? ttsQueue[ttsQueue.length - 1]!
-                : assistantTexts.length > 0
-                    ? assistantTexts[assistantTexts.length - 1]!
-                    : undefined;
+            // Speak the full final assistant message (all text blocks), not just last line/block.
+            let finalText: string | undefined;
+            if (ttsQueue.length > 0) {
+                finalText = ttsQueue.join("\n\n").trim();
+            } else if (Array.isArray(event?.messages)) {
+                const lastAssistant = [...event.messages]
+                    .reverse()
+                    .find((m: any) => m?.role === "assistant");
+                if (lastAssistant) {
+                    const blocks = extractTextBlocksFromMessage(lastAssistant);
+                    finalText = blocks.join("\n\n").trim();
+                }
+            } else if (assistantTexts.length > 0) {
+                finalText = assistantTexts.join("\n\n").trim();
+            }
+
             ttsQueue = [];
             if (finalText) void speakSegments([finalText], ctx);
             return;
