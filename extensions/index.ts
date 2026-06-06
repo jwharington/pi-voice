@@ -588,8 +588,8 @@ export default function (pi: ExtensionAPI): void {
      */
     function getRolePriority(role: string): number {
         switch (role) {
-            case "assistant": return 1;
-            case "agent": return 2;
+            case "agent": return 1;
+            case "assistant": return 2;
             case "model": return 3;
             case "unknown": return 4;
             default: return 4;
@@ -601,8 +601,8 @@ export default function (pi: ExtensionAPI): void {
         if (!message) return [];
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
-        // Exclude user, tool, system, and raw model outputs.
-        if (role === "user" || role === "tool" || role === "system" || role === "model") return [];
+        // Exclude user, tool, and system roles. Model is allowed but has lowest priority (3).
+        if (role === "user" || role === "tool" || role === "system") return [];
 
         // Some hosts provide content as a plain string instead of block array.
         if (typeof message.content === "string" && message.content.trim()) {
@@ -715,7 +715,11 @@ export default function (pi: ExtensionAPI): void {
     pi.on("message_end" as any, (event: any, ctx: any) => {
         if (!pendingTts) return;
 
-        const textBlocks = extractAssistantTextBlocks(event?.message);
+        let textBlocks = extractAssistantTextBlocks(event?.message);
+        // Fallback for eco mode: allow model/agent roles if strict extraction failed
+        if (textBlocks.length === 0 && config?.ecoMode) {
+            textBlocks = extractTextBlocksFromMessage(event?.message);
+        }
         if (textBlocks.length === 0) {
             logger.debug(
                 { role: event?.message?.role, contentType: typeof event?.message?.content },
@@ -774,8 +778,17 @@ export default function (pi: ExtensionAPI): void {
                     const best = candidates[0];
                     finalText = best.blocks.join("\n\n").trim() || undefined;
                 }
-            } else if (assistantTexts.length > 0) {
-                finalText = assistantTexts.join("\n\n").trim();
+            }
+
+            // Absolute fallback: allow model/agent roles if strict extraction failed
+            if (finalText === undefined && Array.isArray(event?.messages)) {
+                const fallbackTexts = event.messages
+                    .flatMap((m: any) => extractTextBlocksFromMessage(m))
+                    .filter((t: string) => t.trim().length > 0);
+                if (fallbackTexts.length > 0) {
+                    finalText = fallbackTexts.join("\n\n").trim();
+                    logger.debug({ fallback: true }, "Using fallback extraction for eco TTS");
+                }
             }
 
             ttsQueue = [];
