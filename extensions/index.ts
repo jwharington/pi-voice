@@ -602,7 +602,10 @@ export default function (pi: ExtensionAPI): void {
 
         const role = typeof message.role === "string" ? message.role.toLowerCase() : undefined;
         // Always exclude user, tool, and system.
-        if (role === "user" || role === "tool" || role === "system") return [];
+        if (role === "user" || role === "tool" || role === "system") {
+            logger.info({ role }, "Filtered out non-assistant role in TTS");
+            return [];
+        }
 
         const verbosity = config?.ttsVerbosity ?? 1;
         // Filter by verbosity: 1 = assistant only, 2 = assistant+agent, 3 = +model
@@ -610,6 +613,8 @@ export default function (pi: ExtensionAPI): void {
         if (role === "agent" && verbosity >= 2) return extractRawText(message);
         if (role === "model" && verbosity >= 3) return extractRawText(message);
         if (!role && verbosity >= 4) return extractRawText(message);
+
+        logger.info({ role, verbosity }, "Role excluded by verbosity filter");
         return [];
     }
 
@@ -680,6 +685,17 @@ export default function (pi: ExtensionAPI): void {
         return [];
     }
 
+    /** Debug function to log message content for TTS diagnosis. */
+    function logMessageContent(message: any): void {
+        logger.info({
+            role: message?.role,
+            contentType: typeof message?.content,
+            contentLength: String(message?.content)?.length,
+            textContent: message?.text,
+            hasText: !!message?.text,
+        }, "TTS message content for diagnosis");
+    }
+
     function splitForTts(text: string, maxLen = 700): string[] {
         const normalized = text.trim();
         if (!normalized) return [];
@@ -731,9 +747,9 @@ export default function (pi: ExtensionAPI): void {
             textBlocks = extractTextBlocksFromMessage(event?.message);
         }
         if (textBlocks.length === 0) {
-            logger.debug(
-                { role: event?.message?.role, contentType: typeof event?.message?.content },
-                "message_end yielded 0 text blocks"
+            logger.info(
+                { role: event?.message?.role, contentType: typeof event?.message?.content, contentLength: String(event?.message?.content)?.length, textContent: event?.message?.text },
+                "message_end yielded 0 text blocks for TTS"
             );
             return;
         }
@@ -742,11 +758,13 @@ export default function (pi: ExtensionAPI): void {
         // (We overwrite, not push, because we only want the final response spoken — not tool output.)
         if (config?.ecoMode) {
             ttsQueue = textBlocks;
+            logger.info({ textBlocksCount: textBlocks.length, role: event?.message?.role }, "message_end TTS queued for eco mode");
             return;
         }
 
         // Non-eco mode: speak immediately
         spokeViaMessageEnd = true;
+        logger.info({ role: event?.message?.role, textBlocksCount: textBlocks.length }, "message_end TTS speaking");
         void speakSegments(textBlocks, ctx);
     });
 
@@ -755,6 +773,10 @@ export default function (pi: ExtensionAPI): void {
     pi.on("agent_end", (event: any, ctx) => {
         if (!pendingTts) return;
         pendingTts = false;
+
+        // Debug: log all message roles and content shapes at agent_end
+        const roles = Array.isArray(event?.messages) ? event.messages.map((m: any) => ({ role: m?.role, content: String(m?.content).slice(0, 100) })) : [];
+        logger.info({ roles, verbosity: config?.ttsVerbosity }, "agent_end message roles");
 
         const assistantTexts = Array.isArray(event?.messages)
             ? event.messages
@@ -797,17 +819,18 @@ export default function (pi: ExtensionAPI): void {
                     .filter((t: string) => t.trim().length > 0);
                 if (fallbackTexts.length > 0) {
                     finalText = fallbackTexts.join("\n\n").trim();
-                    logger.debug({ fallback: true }, "Using fallback extraction for eco TTS");
+                    logger.info({ fallback: true }, "Using fallback extraction for eco TTS");
                 }
             }
 
             ttsQueue = [];
             const segments = splitForTts(finalText ?? "");
             if (segments.length > 0) {
+                logger.info({ segmentCount: segments.length }, "agent_end TTS speaking");
                 void speakSegments(segments, ctx);
             } else {
-                logger.warn(
-                    { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length },
+                logger.info(
+                    { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length, verbosity: config?.ttsVerbosity },
                     "No speakable text found for eco TTS"
                 );
             }
@@ -817,10 +840,11 @@ export default function (pi: ExtensionAPI): void {
         // Non-eco mode: if message_end already spoke, skip fallback to avoid duplicates.
         ttsQueue = [];
         if (!spokeViaMessageEnd && assistantTexts.length > 0) {
+            logger.info({ assistantTextsCount: assistantTexts.length }, "agent_end TTS speaking");
             void speakSegments(assistantTexts, ctx);
         } else if (!spokeViaMessageEnd) {
-            logger.warn(
-                { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length },
+            logger.info(
+                { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length, verbosity: config?.ttsVerbosity },
                 "No speakable text found for non-eco TTS"
             );
         }
@@ -836,6 +860,7 @@ export default function (pi: ExtensionAPI): void {
 
         // Volume control: 0.0 disables TTS entirely
         if (config.volume === 0) {
+            logger.info("TTS skipped: volume is 0");
             ctx.ui.setStatus(STATUS_KEY, undefined);
             return;
         }
@@ -850,6 +875,7 @@ export default function (pi: ExtensionAPI): void {
 
         setStatus(ctx, "speaking…");
         isSpeaking = true;
+        logger.info({ segmentCount: segments.length }, "speakSegments TTS speaking");
         try {
             if (config.provider === "local") {
                 // macOS `say` command plays directly
