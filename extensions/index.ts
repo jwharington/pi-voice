@@ -98,6 +98,9 @@ let isSpeaking = false;
 /** AbortController used to cancel in-flight TTS synthesis streams. */
 let ttsAbort: AbortController | null = null;
 
+/** Monotonic token for active TTS run; increment to cancel stale runs safely. */
+let ttsRunToken = 0;
+
 /** VAD processor for progressive transcription during recording. */
 let vadProcessor: VadProcessor | null = null;
 
@@ -161,6 +164,15 @@ function clearInterimTranscriptFromPrompt(ctx: ExtensionContext): void {
     if (!interimPreviewActive) return;
     ctx.ui.setEditorText(editorTextBeforeRecording);
     interimPreviewActive = false;
+}
+
+function cancelTtsPlayback(ctx: ExtensionContext): void {
+    // Invalidate any in-flight speakSegments() run so stale finally blocks don't clobber state.
+    ttsRunToken++;
+    isSpeaking = false;
+    stopPlayback();
+    ctx.ui.setStatus(STATUS_KEY, "cancelled");
+    setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 1500);
 }
 
 function parseBooleanish(input: string): boolean | undefined {
@@ -456,6 +468,7 @@ export default function (pi: ExtensionAPI): void {
         recorder = null;
         vadProcessor = null;
         pendingTts = false;
+        ttsRunToken++;
         isSpeaking = false;
         keyPressed = false;
         lastStopTime = 0;
@@ -479,10 +492,7 @@ export default function (pi: ExtensionAPI): void {
         Reflect.set(globalThis, VOICE_HANDLER_SYMBOL, (data: string): boolean => {
             // Cancel voice output with Escape key (always, regardless of config).
             if (isSpeaking && matchesKey(data, ESCAPE_KEY)) {
-                isSpeaking = false;
-                stopPlayback();
-                ctx.ui.setStatus(STATUS_KEY, "cancelled");
-                setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 1500);
+                cancelTtsPlayback(ctx);
                 return true;
             }
 
@@ -492,10 +502,7 @@ export default function (pi: ExtensionAPI): void {
 
             // Cancel voice output if currently speaking (press shortcut to stop TTS).
             if (isSpeaking && !recorder?.isRecording) {
-                isSpeaking = false;
-                stopPlayback();
-                ctx.ui.setStatus(STATUS_KEY, "cancelled");
-                setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 1500);
+                cancelTtsPlayback(ctx);
                 return true;
             }
 
@@ -619,7 +626,10 @@ export default function (pi: ExtensionAPI): void {
             return;
         }
 
-        // If already speaking (e.g. another message arrived), cancel and restart.
+        // Start a new run token; older runs become stale.
+        const myRunToken = ++ttsRunToken;
+
+        // If already speaking, stop existing playback before starting new one.
         if (isSpeaking) {
             stopPlayback();
         }
@@ -630,12 +640,16 @@ export default function (pi: ExtensionAPI): void {
             if (config.provider === "local") {
                 // macOS `say` command plays directly
                 for (const seg of segments) {
+                    // Abort stale runs early
+                    if (myRunToken !== ttsRunToken) return;
                     await speakLocal(seg, config.ttsVoice);
                 }
             } else {
                 // Cloud providers: stream PCM to sox for playback
                 async function* generateChunks(): AsyncIterable<Buffer> {
                     for (const seg of segments) {
+                        // Abort stale runs early
+                        if (myRunToken !== ttsRunToken) return;
                         yield* synthesizeStream(seg, config!.provider, {
                             ttsBaseUrl: config!.ttsBaseUrl,
                             ttsModel: config!.ttsModel,
@@ -649,8 +663,11 @@ export default function (pi: ExtensionAPI): void {
             logger.error({ err: (err as Error).message }, "TTS error");
             ctx.ui.notify(`TTS error: ${(err as Error).message}`, "warning");
         } finally {
-            isSpeaking = false;
-            ctx.ui.setStatus(STATUS_KEY, undefined);
+            // Only latest run is allowed to clear state.
+            if (myRunToken === ttsRunToken) {
+                isSpeaking = false;
+                ctx.ui.setStatus(STATUS_KEY, undefined);
+            }
         }
     }
 
@@ -674,10 +691,8 @@ export default function (pi: ExtensionAPI): void {
 
             if (action === "stop") {
                 if (isSpeaking) {
-                    isSpeaking = false;
-                    stopPlayback();
+                    cancelTtsPlayback(ctx);
                     ctx.ui.notify("TTS playback stopped", "info");
-                    ctx.ui.setStatus(STATUS_KEY, undefined);
                     return;
                 }
                 if (!recorder?.isRecording) {
