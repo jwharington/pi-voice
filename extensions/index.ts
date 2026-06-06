@@ -30,6 +30,7 @@
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from "@mariozechner/pi-coding-agent";
 import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
 import { transcribeStreaming, type SttStreamCallbacks } from "../src/services/stt.js";
+import { VadProcessor, type VadCallbacks } from "../src/services/vad.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
 import { createSettingsComponent } from "./settings.js";
 import { getVoicesForProvider } from "../src/services/voices.js";
@@ -97,6 +98,21 @@ let isSpeaking = false;
 /** AbortController used to cancel in-flight TTS synthesis streams. */
 let ttsAbort: AbortController | null = null;
 
+/** VAD processor for progressive transcription during recording. */
+let vadProcessor: VadProcessor | null = null;
+
+/** Accumulated intermediate transcript text from progressive VAD transcription. */
+let intermediateTranscript = "";
+
+/** Flag: in-flight transcription of a VAD-detected utterance. Prevents concurrent calls. */
+let transcriptionPending = false;
+
+/** Extension context reference for use in VAD callbacks (scoped to session). */
+let activeCtx: ExtensionContext | null = null;
+
+/** Extension API reference for use in recording pipeline. */
+let activePi: ExtensionAPI | null = null;
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function spin(ctx: ExtensionContext): void {
@@ -161,7 +177,12 @@ async function stopRecording(ctx: ExtensionContext, pi: ExtensionAPI, runTranscr
     setStatus(ctx, runTranscription ? "processing…" : "stopped");
 
     const recRef = recorder;
+    const vadRef = vadProcessor;
     recorder = null;
+    vadProcessor = null;
+
+    // Reset intermediate state
+    transcriptionPending = false;
 
     let pcm: Buffer;
     try {
@@ -179,7 +200,7 @@ async function stopRecording(ctx: ExtensionContext, pi: ExtensionAPI, runTranscr
     });
 
     if (runTranscription) {
-        await runPipeline(pcm, ctx, pi);
+        await runPipeline(pcm, vadRef, ctx, pi);
     } else {
         ctx.ui.setStatus(STATUS_KEY, undefined);
     }
@@ -193,10 +214,20 @@ function startRecording(ctx: ExtensionContext): void {
         logger.debug({ elapsed: Date.now() - lastStopTime }, "Ignoring start within cooldown window");
         return;
     }
+
+    // Reset progressive transcription state
+    intermediateTranscript = "";
+    transcriptionPending = false;
+    activeCtx = ctx;
+    vadProcessor = new VadProcessor({}, createVadCallbacks(ctx));
+
     recorder = new AudioRecorder();
     recorder.start({
         onLevel: (level) => {
             vuLevel = (vuLevel * 0.6) + (level * 0.4);
+        },
+        onChunk: (chunk) => {
+            vadProcessor?.processChunk(chunk);
         },
     });
 
@@ -206,8 +237,72 @@ function startRecording(ctx: ExtensionContext): void {
     startSpinner(ctx);
 }
 
+/** Build VAD callbacks that trigger progressive transcription. */
+function createVadCallbacks(ctx: ExtensionContext): VadCallbacks {
+    return {
+        onSpeechStart: () => {
+            logger.debug("VAD: speech started");
+        },
+        onSpeechEnd: () => {
+            logger.debug("VAD: speech ended");
+        },
+        onUtteranceReady: (utterance: Buffer) => {
+            if (utterance.byteLength < 1600) {
+                // Ignore very short utterances (< 50ms)
+                return;
+            }
+            if (!config || !activePi) return;
+            // Transcribe the utterance in the background (non-blocking)
+            void transcribeUtterance(utterance, ctx);
+        },
+    };
+}
+
+/** Transcribe a single utterance captured by VAD (non-blocking). */
+async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<void> {
+    // Prevent concurrent transcription calls
+    if (transcriptionPending) {
+        logger.debug("Skipping concurrent transcription");
+        return;
+    }
+
+    transcriptionPending = true;
+    setStatus(ctx, "transcribing…");
+
+    try {
+        const utteranceText = await transcribeStreaming(
+            pcm.buffer as ArrayBuffer,
+            config!.provider,
+            {
+                sttModel: config!.sttModel,
+                sttBaseUrl: config!.sttBaseUrl,
+            },
+            {
+                onDelta: (delta) => {
+                    intermediateTranscript += delta;
+                    const truncated = intermediateTranscript.length > 50
+                        ? intermediateTranscript.slice(0, 50) + "…"
+                        : intermediateTranscript;
+                    setStatus(ctx, `transcribing… ${truncated}`);
+                },
+                onDone: (text) => {
+                    if (text.trim()) {
+                        intermediateTranscript = text;
+                        logger.info({ transcript: text }, "Intermediate transcription ready");
+                    }
+                },
+            },
+        );
+    } catch (err) {
+        logger.error({ err: (err as Error).message }, "Intermediate transcription failed");
+    } finally {
+        transcriptionPending = false;
+    }
+}
+
 async function runPipeline(
     pcm: Buffer,
+    vadRef: VadProcessor | null,
     ctx: ExtensionContext,
     pi: ExtensionAPI,
 ): Promise<void> {
@@ -222,51 +317,77 @@ async function runPipeline(
     }
 
     try {
-        // ── STT with streaming deltas ────────────────────────────────
-        let transcriptAccumulated = "";
+        let transcript: string;
 
-        const sttCallbacks: SttStreamCallbacks = {
-            onDelta: (delta: string) => {
-                transcriptAccumulated += delta;
-                // Show incremental transcript in the status bar (truncated).
-                const display = transcriptAccumulated.trim();
-                if (display.length > 0) {
-                    const truncated = display.length > 50
-                        ? display.slice(0, 50) + "…"
-                        : display;
-                    setStatus(ctx, `transcribing… ${truncated}`);
-                }
-            },
-            onDone: (text: string) => {
-                logger.info({ transcript: text }, "Transcript ready");
-            },
-            onError: (error: Error) => {
-                logger.error({ err: error.message }, "STT streaming error");
-            },
-        };
+        // Flush remaining audio from VAD (speech that ended without a trailing pause)
+        const remaining = vadProcessor?.flush() ?? null;
 
-        setStatus(ctx, "transcribing…");
-        const transcript = await transcribeStreaming(
-          pcm.buffer as ArrayBuffer,
-          config.provider,
-          {
-            sttModel: config.sttModel,
-            sttBaseUrl: config.sttBaseUrl,
-          },
-          sttCallbacks,
-        );
+        if (remaining && remaining.byteLength >= 1600) {
+            // There's remaining speech that VAD didn't fire an utterance for
+            // Transcribe it and append to intermediate results
+            setStatus(ctx, "transcribing…");
+            const remainingText = await transcribeStreaming(
+                remaining.buffer as ArrayBuffer,
+                config.provider,
+                {
+                    sttModel: config.sttModel,
+                    sttBaseUrl: config.sttBaseUrl,
+                },
+                {},
+            );
 
-        if (!transcript.trim()) {
+            if (remainingText.trim() && intermediateTranscript.trim()) {
+                transcript = intermediateTranscript + " " + remainingText;
+            } else if (remainingText.trim()) {
+                transcript = remainingText;
+            } else {
+                transcript = intermediateTranscript;
+            }
+        } else if (intermediateTranscript.trim()) {
+            // We already have intermediate results from VAD-detected utterances
+            // Transcribe the full buffer for the authoritative final result
+            setStatus(ctx, "transcribing…");
+            const finalText = await transcribeStreaming(
+                pcm.buffer as ArrayBuffer,
+                config.provider,
+                {
+                    sttModel: config.sttModel,
+                    sttBaseUrl: config.sttBaseUrl,
+                },
+                {},
+            );
+            transcript = finalText.trim() || intermediateTranscript;
+        } else {
+            // No intermediate results — fall back to full transcription
+            setStatus(ctx, "transcribing…");
+            transcript = await transcribeStreaming(
+                pcm.buffer as ArrayBuffer,
+                config.provider,
+                {
+                    sttModel: config.sttModel,
+                    sttBaseUrl: config.sttBaseUrl,
+                },
+                {},
+            );
+        }
+
+        // Reset intermediate state for next recording
+        const finalTranscript = transcript.trim();
+        intermediateTranscript = "";
+
+        if (!finalTranscript) {
             setStatus(ctx, "no speech detected");
             setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 2000);
             return;
         }
 
+        logger.info({ transcript: finalTranscript }, "Transcript ready");
+
         if (!config.ttsEnabled) {
             // Inject transcript into the editor buffer – user can edit / submit
             const current = ctx.ui.getEditorText();
             const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
-            ctx.ui.setEditorText(`${current}${sep}${transcript}`);
+            ctx.ui.setEditorText(`${current}${sep}${finalTranscript}`);
             ctx.ui.setStatus(STATUS_KEY, undefined);
             return;
         }
@@ -274,7 +395,7 @@ async function runPipeline(
         // ── Send to active pi session ─────────────────────────────────────
         setStatus(ctx, "thinking…");
         pendingTts = true;
-        pi.sendUserMessage(transcript, {
+        pi.sendUserMessage(finalTranscript, {
           deliverAs: config!.deliveryMode as DeliveryMode,
         });
         // TTS is handled in the agent_end listener below
@@ -325,15 +446,21 @@ export default function (pi: ExtensionAPI): void {
         Reflect.deleteProperty(globalThis, VOICE_HANDLER_SYMBOL);
         stopSpinner(ctx);
         recorder = null;
+        vadProcessor = null;
         pendingTts = false;
         isSpeaking = false;
         keyPressed = false;
         lastStopTime = 0;
+        intermediateTranscript = "";
+        transcriptionPending = false;
+        activeCtx = null;
+        activePi = null;
         logger.info("pi-voice extension shut down");
     });
 
     pi.on("session_start", (_event, ctx) => {
         const keyId = config!.shortcut.toLowerCase() as KeyId;
+        activePi = pi;
 
         // Patch CustomEditor.prototype.handleInput once so the voice handler
         // composes with any editor set by other extensions (e.g. pi-powerline-footer's

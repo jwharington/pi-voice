@@ -42,16 +42,18 @@ export class AudioRecorder {
     private proc: ChildProcessByStdio<null, Readable, Readable> | null = null;
     private chunks: Buffer[] = [];
     private onLevel: ((level: number) => void) | undefined;
+    private onChunk: ((chunk: Buffer) => void) | undefined;
 
     get isRecording(): boolean {
         return this.proc !== null;
     }
 
-    start(options?: { onLevel?: (level: number) => void }): void {
+    start(options?: { onLevel?: (level: number) => void; onChunk?: (chunk: Buffer) => void }): void {
         if (this.proc) return;
 
         this.chunks = [];
         this.onLevel = options?.onLevel;
+        this.onChunk = options?.onChunk;
 
         // `rec` is the recording front-end shipped with sox.  We capture raw
         // signed-integer 16-bit PCM at 16kHz, mono, little-endian to stdout.
@@ -75,6 +77,8 @@ export class AudioRecorder {
             if (this.onLevel) {
                 this.onLevel(computePcmLevel(chunk));
             }
+            // Feed chunk to external consumers (e.g. VAD processor)
+            this.onChunk?.(chunk);
         });
 
         proc.stderr.on("data", (data: Buffer) => {
@@ -103,6 +107,7 @@ export class AudioRecorder {
             const proc = this.proc;
             this.proc = null;
             this.onLevel = undefined;
+            this.onChunk = undefined;
 
             proc.on("close", (code) => {
                 if (code !== null && code !== 0 && code !== 130 /* SIGINT */) {
