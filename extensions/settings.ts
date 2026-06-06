@@ -169,9 +169,9 @@ export async function createSettingsComponent(
     {
       id: "ttsVerbosity",
       label: "TTS Verbosity",
-      description: "1: assistant only | 2: assistant+agent | 3: all",
+      description: "1: assistant only | 2: +agent | 3: +model | 4: all",
       currentValue: String(config.ttsVerbosity),
-      values: ["1", "2", "3"],
+      values: ["1", "2", "3", "4"],
     },
     {
       id: "volume",

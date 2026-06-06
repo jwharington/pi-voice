@@ -1002,8 +1002,8 @@ export default function (pi: ExtensionAPI): void {
 
                 if (field === "verbosity" || field === "ttsverbosity" || field === "tts-verbosity") {
                     const num = parseInt(value, 10);
-                    if (isNaN(num) || num < 1 || num > 3) {
-                        ctx.ui.notify("ttsVerbosity must be 1, 2, or 3", "warning");
+                    if (isNaN(num) || num < 1 || num > 4) {
+                        ctx.ui.notify("ttsVerbosity must be 1, 2, 3, or 4", "warning");
                         return;
                     }
                     config = updateConfig(process.cwd(), { ttsVerbosity: num });

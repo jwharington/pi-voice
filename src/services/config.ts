@@ -72,7 +72,7 @@ export interface PiVoiceConfig {
   volume: number;
   /**
    * Controls which message roles are spoken.
-   * 1 = only assistant, 2 = assistant + agent, 3 = assistant + agent + model.
+   * 1 = only assistant, 2 = assistant + agent, 3 = assistant + agent + model, 4 = all.
    * Default: 1.
    */
   ttsVerbosity: number;
@@ -119,7 +119,7 @@ const configFileSchema = z.object({
   ttsModel: z.string().min(1).optional(),
   ttsVoice: z.string().min(1).optional(),
   volume: z.number().min(0).max(1).optional().default(1.0),
-  ttsVerbosity: z.number().int().min(1).max(3).optional().default(1),
+  ttsVerbosity: z.number().int().min(1).max(4).optional().default(1),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
