@@ -584,10 +584,31 @@ export default function (pi: ExtensionAPI): void {
 
     function extractTextBlocksFromMessage(message: any): string[] {
         if (!message || message.role !== "assistant") return [];
+
+        // Some hosts provide content as a plain string instead of block array.
+        if (typeof message.content === "string" && message.content.trim()) {
+            return [message.content.trim()];
+        }
+
+        // Some hosts provide a direct text field.
+        if (typeof message.text === "string" && message.text.trim()) {
+            return [message.text.trim()];
+        }
+
         const blocks = Array.isArray(message.content) ? message.content : [];
-        return blocks
+        const textBlocks = blocks
             .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
             .map((b: any) => b.text.trim());
+
+        if (textBlocks.length > 0) return textBlocks;
+
+        // Last-resort fallback: stringify unknown content shape so TTS still has something.
+        if (message.content && !Array.isArray(message.content)) {
+            const raw = String(message.content).trim();
+            if (raw) return [raw];
+        }
+
+        return [];
     }
 
     // Listen for message_end to speak as early as possible when supported by the host.
