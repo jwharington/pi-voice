@@ -76,6 +76,11 @@ export interface PiVoiceConfig {
    * Default: 1.
    */
   ttsVerbosity: number;
+  /**
+   * Whether to filter out emojis and symbols from TTS output.
+   * Default: true.
+   */
+  ttsFilterSymbols: boolean;
 }
 
 // ── Default config ───────────────────────────────────────────────────
@@ -94,6 +99,7 @@ function defaultConfig(): PiVoiceConfig {
     deliveryMode: "followUp",
     volume: 1.0,
     ttsVerbosity: 1,
+    ttsFilterSymbols: true,
   };
 }
 
@@ -120,6 +126,7 @@ const configFileSchema = z.object({
   ttsVoice: z.string().min(1).optional(),
   volume: z.number().min(0).max(1).optional().default(1.0),
   ttsVerbosity: z.number().int().min(1).max(4).optional().default(1),
+  ttsFilterSymbols: z.boolean().optional().default(true),
 });
 
 // ── Config loader ────────────────────────────────────────────────────
@@ -254,6 +261,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     deliveryMode: parsed.deliveryMode ?? "followUp",
     volume: parsed.volume ?? 1.0,
     ttsVerbosity: parsed.ttsVerbosity ?? 1,
+    ttsFilterSymbols: parsed.ttsFilterSymbols ?? true,
     ...(parsed.sttBaseUrl ? { sttBaseUrl: parsed.sttBaseUrl } : {}),
     ...(parsed.ttsBaseUrl ? { ttsBaseUrl: parsed.ttsBaseUrl } : {}),
     ...(parsed.sttModel ? { sttModel: parsed.sttModel } : {}),
@@ -262,7 +270,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "inputMode" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice" | "ttsVerbosity">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "inputMode" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice" | "ttsVerbosity" | "ttsFilterSymbols">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -294,6 +302,7 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       ...(next.ttsModel ? { ttsModel: next.ttsModel } : {}),
       ...(next.ttsVoice ? { ttsVoice: next.ttsVoice } : {}),
       ...(next.ttsVerbosity ? { ttsVerbosity: next.ttsVerbosity } : {}),
+      ttsFilterSymbols: next.ttsFilterSymbols,
     }, null, 2)}\n`,
     "utf-8",
   );

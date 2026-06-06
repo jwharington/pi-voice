@@ -57,7 +57,10 @@ export async function createSettingsComponent(
         break;
       case "ttsVerbosity":
         const v = parseInt(newValue, 10);
-        if (!isNaN(v) && v >= 1 && v <= 3) patch.ttsVerbosity = v;
+        if (!isNaN(v) && v >= 1 && v <= 4) patch.ttsVerbosity = v;
+        break;
+      case "ttsFilterSymbols":
+        patch.ttsFilterSymbols = newValue === "On";
         break;
       case "volume":
         const vol = parseFloat(newValue.replace("%", "")) / 100;
@@ -172,6 +175,13 @@ export async function createSettingsComponent(
       description: "1: assistant only | 2: +agent | 3: +model | 4: all",
       currentValue: String(config.ttsVerbosity),
       values: ["1", "2", "3", "4"],
+    },
+    {
+      id: "ttsFilterSymbols",
+      label: "Filter Symbols in TTS",
+      description: "Remove emojis and symbols from speech",
+      currentValue: config.ttsFilterSymbols ? "On" : "Off",
+      values: ["On", "Off"],
     },
     {
       id: "volume",

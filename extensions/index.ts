@@ -735,6 +735,24 @@ export default function (pi: ExtensionAPI): void {
         return pieces.length > 0 ? pieces : [normalized];
     }
 
+    /**
+     * Filters out emojis and symbols that TTS engines struggle with or read aloud awkwardly.
+     */
+    function filterSymbols(text: string): string {
+        return text
+            // Common emoji ranges
+            .replace(/[\u{1F600}-\u{1F64F}]/gu, '') // Emoticons
+            .replace(/[\u{1F300}-\u{1F5FF}]/gu, '') // Miscellaneous symbols
+            .replace(/[\u{1F680}-\u{1F6FF}]/gu, '') // Transport and map
+            .replace(/[\u{1F900}-\u{1F9FF}]/gu, '') // Supplemental symbols
+            // Common icons/dings
+            .replace(/[\u2600-\u26FF]/g, '') // Misc symbols
+            .replace(/[\u2700-\u27BF]/g, '') // Dingbats
+            // Clean up excess spaces
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
     // Listen for message_end to speak as early as possible when supported by the host.
     // Important: do not await TTS here, otherwise message lifecycle completion can be blocked
     // and Pi may remain in "working..." until playback completes.
@@ -765,7 +783,8 @@ export default function (pi: ExtensionAPI): void {
         // Non-eco mode: speak immediately
         spokeViaMessageEnd = true;
         logger.info({ role: event?.message?.role, textBlocksCount: textBlocks.length }, "message_end TTS speaking");
-        void speakSegments(textBlocks, ctx);
+        const finalBlocks = config?.ttsFilterSymbols ? textBlocks.map(filterSymbols) : textBlocks;
+        void speakSegments(finalBlocks, ctx);
     });
 
     // At agent_end, always provide a fallback path from event.messages so TTS works
@@ -825,9 +844,10 @@ export default function (pi: ExtensionAPI): void {
 
             ttsQueue = [];
             const segments = splitForTts(finalText ?? "");
-            if (segments.length > 0) {
+            const finalSegments = config?.ttsFilterSymbols ? segments.map(filterSymbols) : segments;
+            if (finalSegments.length > 0) {
                 logger.info({ segmentCount: segments.length }, "agent_end TTS speaking");
-                void speakSegments(segments, ctx);
+                void speakSegments(finalSegments, ctx);
             } else {
                 logger.info(
                     { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length, verbosity: config?.ttsVerbosity },
@@ -839,9 +859,10 @@ export default function (pi: ExtensionAPI): void {
 
         // Non-eco mode: if message_end already spoke, skip fallback to avoid duplicates.
         ttsQueue = [];
-        if (!spokeViaMessageEnd && assistantTexts.length > 0) {
+        const finalAssistantTexts = config?.ttsFilterSymbols ? assistantTexts.map(filterSymbols) : assistantTexts;
+        if (!spokeViaMessageEnd && finalAssistantTexts.length > 0) {
             logger.info({ assistantTextsCount: assistantTexts.length }, "agent_end TTS speaking");
-            void speakSegments(assistantTexts, ctx);
+            void speakSegments(finalAssistantTexts, ctx);
         } else if (!spokeViaMessageEnd) {
             logger.info(
                 { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length, verbosity: config?.ttsVerbosity },
@@ -975,7 +996,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|inputMode|eco|enabled|deliveryMode|verbosity|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|inputMode|eco|enabled|deliveryMode|verbosity|filterSymbols|volume|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -1034,6 +1055,17 @@ export default function (pi: ExtensionAPI): void {
                     }
                     config = updateConfig(process.cwd(), { ttsVerbosity: num });
                     ctx.ui.notify(`ttsVerbosity set to ${num}`, "info");
+                    return;
+                }
+
+                if (field === "filtersymbols" || field === "filtersymbol" || field === "filter-symbols") {
+                    const parsed = parseBooleanish(value);
+                    if (parsed === undefined) {
+                        ctx.ui.notify("filterSymbols must be true/false (or on/off)", "warning");
+                        return;
+                    }
+                    config = updateConfig(process.cwd(), { ttsFilterSymbols: parsed });
+                    ctx.ui.notify(`filterSymbols set to ${parsed}`, "info");
                     return;
                 }
 
@@ -1105,7 +1137,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, inputMode, eco, enabled, verbosity, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, inputMode, eco, enabled, verbosity, filterSymbols, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -1146,6 +1178,7 @@ export default function (pi: ExtensionAPI): void {
                     `tts:       ${config.ttsEnabled}`,
                     `inputMode: ${config.inputMode}`,
                     `verbosity: ${config.ttsVerbosity}`,
+                    `filterSymbols: ${config.ttsFilterSymbols}`,
                     `volume:    ${config.volume} (${Math.round(config.volume * 100)}%)`,
                     `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                     `deliveryMode: ${config.deliveryMode} (${config.deliveryMode === "steer" ? "interrupt" : "queue"})`,
@@ -1186,7 +1219,7 @@ export default function (pi: ExtensionAPI): void {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, inputMode=${config.inputMode}, verbosity=${config.ttsVerbosity}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, inputMode=${config.inputMode}, verbosity=${config.ttsVerbosity}, filterSymbols=${config.ttsFilterSymbols}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
         },
     });
 }
