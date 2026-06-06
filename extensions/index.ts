@@ -704,9 +704,10 @@ export default function (pi: ExtensionAPI): void {
         const textBlocks = extractAssistantTextBlocks(event?.message);
         if (textBlocks.length === 0) return;
 
-        // Eco mode: accumulate assistant text blocks for agent_end.
+        // Eco mode: overwrite with each assistant message so only the LAST one survives.
+        // (We overwrite, not push, because we only want the final response spoken — not tool output.)
         if (config?.ecoMode) {
-            ttsQueue.push(...textBlocks);
+            ttsQueue = textBlocks;
             return;
         }
 
@@ -728,34 +729,27 @@ export default function (pi: ExtensionAPI): void {
             : [];
 
         if (config?.ecoMode) {
-            // Speak the full final assistant message (all text blocks), not just last line/block.
+            // Speak the final assistant message (all text blocks within it).
             let finalText: string | undefined;
-            let fallbackLastLine: string | undefined;
 
             if (ttsQueue.length > 0) {
                 finalText = ttsQueue.join("\n\n").trim();
-                fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
-                // Strictly collect assistant messages only (ignore tool outputs)
-                const allSpeakable = event.messages
-                    .flatMap((m: any) => extractAssistantTextBlocks(m))
-                    .filter((t: string) => t.trim().length > 0);
-                if (allSpeakable.length > 0) {
-                    finalText = allSpeakable.join("\n\n").trim();
-                    fallbackLastLine = allSpeakable[allSpeakable.length - 1];
+                const lastAssistant = [...event.messages]
+                    .reverse()
+                    .find((m: any) => m?.role === "assistant");
+                if (lastAssistant) {
+                    const blocks = extractAssistantTextBlocks(lastAssistant);
+                    finalText = blocks.join("\n\n").trim() || undefined;
                 }
             } else if (assistantTexts.length > 0) {
                 finalText = assistantTexts.join("\n\n").trim();
-                fallbackLastLine = assistantTexts[assistantTexts.length - 1];
             }
 
             ttsQueue = [];
             const segments = splitForTts(finalText ?? "");
             if (segments.length > 0) {
                 void speakSegments(segments, ctx);
-            } else if (fallbackLastLine?.trim()) {
-                // Safety fallback to keep eco TTS alive on odd payloads.
-                void speakSegments([fallbackLastLine.trim()], ctx);
             } else {
                 logger.warn({ eventHasMessages: Array.isArray(event?.messages) }, "No speakable text found for eco TTS");
             }
