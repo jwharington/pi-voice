@@ -270,6 +270,7 @@ function startRecording(ctx: ExtensionContext): void {
     transcriptionPending = false;
     editorTextBeforeRecording = ctx.ui.getEditorText();
     interimPreviewActive = false;
+    showMicListeningIndicatorInPrompt(ctx);
     activeCtx = ctx;
     vadProcessor = new VadProcessor({}, createVadCallbacks(ctx));
 
