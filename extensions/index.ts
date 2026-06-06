@@ -611,6 +611,45 @@ export default function (pi: ExtensionAPI): void {
         return [];
     }
 
+    function splitForTts(text: string, maxLen = 700): string[] {
+        const normalized = text.trim();
+        if (!normalized) return [];
+        if (normalized.length <= maxLen) return [normalized];
+
+        const pieces: string[] = [];
+        const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+
+        for (const para of paragraphs) {
+            if (para.length <= maxLen) {
+                pieces.push(para);
+                continue;
+            }
+
+            const sentences = para.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+            let current = "";
+            for (const sentence of sentences) {
+                const candidate = current ? `${current} ${sentence}` : sentence;
+                if (candidate.length <= maxLen) {
+                    current = candidate;
+                } else {
+                    if (current) pieces.push(current);
+                    if (sentence.length <= maxLen) {
+                        current = sentence;
+                    } else {
+                        // Hard split very long sentence.
+                        for (let i = 0; i < sentence.length; i += maxLen) {
+                            pieces.push(sentence.slice(i, i + maxLen));
+                        }
+                        current = "";
+                    }
+                }
+            }
+            if (current) pieces.push(current);
+        }
+
+        return pieces.length > 0 ? pieces : [normalized];
+    }
+
     // Listen for message_end to speak as early as possible when supported by the host.
     // Important: do not await TTS here, otherwise message lifecycle completion can be blocked
     // and Pi may remain in "working..." until playback completes.
@@ -644,8 +683,11 @@ export default function (pi: ExtensionAPI): void {
         if (config?.ecoMode) {
             // Speak the full final assistant message (all text blocks), not just last line/block.
             let finalText: string | undefined;
+            let fallbackLastLine: string | undefined;
+
             if (ttsQueue.length > 0) {
                 finalText = ttsQueue.join("\n\n").trim();
+                fallbackLastLine = ttsQueue[ttsQueue.length - 1];
             } else if (Array.isArray(event?.messages)) {
                 const lastAssistant = [...event.messages]
                     .reverse()
@@ -653,13 +695,21 @@ export default function (pi: ExtensionAPI): void {
                 if (lastAssistant) {
                     const blocks = extractTextBlocksFromMessage(lastAssistant);
                     finalText = blocks.join("\n\n").trim();
+                    fallbackLastLine = blocks[blocks.length - 1];
                 }
             } else if (assistantTexts.length > 0) {
                 finalText = assistantTexts.join("\n\n").trim();
+                fallbackLastLine = assistantTexts[assistantTexts.length - 1];
             }
 
             ttsQueue = [];
-            if (finalText) void speakSegments([finalText], ctx);
+            const segments = splitForTts(finalText ?? "");
+            if (segments.length > 0) {
+                void speakSegments(segments, ctx);
+            } else if (fallbackLastLine?.trim()) {
+                // Safety fallback to keep eco TTS alive on odd payloads.
+                void speakSegments([fallbackLastLine.trim()], ctx);
+            }
             return;
         }
 
