@@ -113,6 +113,12 @@ let activeCtx: ExtensionContext | null = null;
 /** Extension API reference for use in recording pipeline. */
 let activePi: ExtensionAPI | null = null;
 
+/** Editor text before recording started (used for interim prompt preview). */
+let editorTextBeforeRecording = "";
+
+/** True while interim transcription is being previewed in the editor. */
+let interimPreviewActive = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function spin(ctx: ExtensionContext): void {
@@ -138,6 +144,23 @@ function stopSpinner(ctx: ExtensionContext): void {
 
 function setStatus(ctx: ExtensionContext, msg: string): void {
     ctx.ui.setStatus(STATUS_KEY, msg);
+}
+
+function renderInterimTranscriptInPrompt(ctx: ExtensionContext): void {
+    const preview = intermediateTranscript.trim();
+    if (!preview) return;
+    const sep =
+        editorTextBeforeRecording.length > 0 && !editorTextBeforeRecording.endsWith(" ")
+            ? " "
+            : "";
+    ctx.ui.setEditorText(`${editorTextBeforeRecording}${sep}${preview}`);
+    interimPreviewActive = true;
+}
+
+function clearInterimTranscriptFromPrompt(ctx: ExtensionContext): void {
+    if (!interimPreviewActive) return;
+    ctx.ui.setEditorText(editorTextBeforeRecording);
+    interimPreviewActive = false;
 }
 
 function parseBooleanish(input: string): boolean | undefined {
@@ -191,6 +214,7 @@ async function stopRecording(ctx: ExtensionContext, pi: ExtensionAPI, runTranscr
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ err: msg }, "Failed to stop recording");
         ctx.ui.notify(`Recording failed: ${msg}`, "error");
+        clearInterimTranscriptFromPrompt(ctx);
         ctx.ui.setStatus(STATUS_KEY, undefined);
         return;
     }
@@ -202,6 +226,7 @@ async function stopRecording(ctx: ExtensionContext, pi: ExtensionAPI, runTranscr
     if (runTranscription) {
         await runPipeline(pcm, vadRef, ctx, pi);
     } else {
+        clearInterimTranscriptFromPrompt(ctx);
         ctx.ui.setStatus(STATUS_KEY, undefined);
     }
 }
@@ -218,6 +243,8 @@ function startRecording(ctx: ExtensionContext): void {
     // Reset progressive transcription state
     intermediateTranscript = "";
     transcriptionPending = false;
+    editorTextBeforeRecording = ctx.ui.getEditorText();
+    interimPreviewActive = false;
     activeCtx = ctx;
     vadProcessor = new VadProcessor({}, createVadCallbacks(ctx));
 
@@ -270,7 +297,10 @@ async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<
     setStatus(ctx, "transcribing…");
 
     try {
-        const utteranceText = await transcribeStreaming(
+        const transcriptBeforeUtterance = intermediateTranscript.trim();
+        let utteranceFromDelta = "";
+
+        await transcribeStreaming(
             pcm.buffer as ArrayBuffer,
             config!.provider,
             {
@@ -279,21 +309,18 @@ async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<
             },
             {
                 onDelta: (delta) => {
-                    intermediateTranscript += delta;
-                    const truncated = intermediateTranscript.length > 50
-                        ? intermediateTranscript.slice(0, 50) + "…"
-                        : intermediateTranscript;
-                    setStatus(ctx, `transcribing… ${truncated}`);
+                    utteranceFromDelta += delta;
+                    const parts = [transcriptBeforeUtterance, utteranceFromDelta.trim()].filter(Boolean);
+                    intermediateTranscript = parts.join(" ");
+                    renderInterimTranscriptInPrompt(ctx);
                 },
                 onDone: (text) => {
-                    if (text.trim()) {
-                        if (intermediateTranscript.trim()) {
-                            intermediateTranscript += " " + text;
-                        } else {
-                            intermediateTranscript = text;
-                        }
-                        logger.info({ transcript: text }, "Intermediate transcription ready");
-                    }
+                    const utteranceFinal = text.trim() || utteranceFromDelta.trim();
+                    if (!utteranceFinal) return;
+                    const parts = [transcriptBeforeUtterance, utteranceFinal].filter(Boolean);
+                    intermediateTranscript = parts.join(" ");
+                    renderInterimTranscriptInPrompt(ctx);
+                    logger.info({ transcript: utteranceFinal }, "Intermediate transcription ready");
                 },
             },
         );
@@ -314,6 +341,7 @@ async function runPipeline(
 
     if (pcm.byteLength < 1600) {
         // < 50 ms of audio at 16kHz – accidental tap, ignore
+        clearInterimTranscriptFromPrompt(ctx);
         setStatus(ctx, "too short, ignored");
         setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 2000);
         logger.info("Recording too short, ignoring");
@@ -344,6 +372,9 @@ async function runPipeline(
         if (!transcript.trim() && intermediateTranscript.trim()) {
             transcript = intermediateTranscript;
         }
+
+        // Reset interim prompt preview before applying final behavior.
+        clearInterimTranscriptFromPrompt(ctx);
 
         // Reset intermediate state for next recording
         const finalTranscript = transcript.trim();
@@ -377,6 +408,7 @@ async function runPipeline(
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ err: msg }, "Voice pipeline error");
+        clearInterimTranscriptFromPrompt(ctx);
         setStatus(ctx, `error: ${msg.slice(0, 80)}`);
         setTimeout(() => ctx.ui.setStatus(STATUS_KEY, undefined), 4000);
     }
@@ -419,6 +451,7 @@ export default function (pi: ExtensionAPI): void {
         // Clear the voice handler so no stale handler remains between sessions.
         Reflect.deleteProperty(globalThis, VOICE_HANDLER_SYMBOL);
         stopSpinner(ctx);
+        clearInterimTranscriptFromPrompt(ctx);
         recorder = null;
         vadProcessor = null;
         pendingTts = false;
@@ -427,6 +460,8 @@ export default function (pi: ExtensionAPI): void {
         lastStopTime = 0;
         intermediateTranscript = "";
         transcriptionPending = false;
+        editorTextBeforeRecording = "";
+        interimPreviewActive = false;
         activeCtx = null;
         activePi = null;
         logger.info("pi-voice extension shut down");
@@ -670,6 +705,7 @@ export default function (pi: ExtensionAPI): void {
                     try {
                         await recRef.stop();
                     } catch { /* ignore */ }
+                    clearInterimTranscriptFromPrompt(ctx);
                     void playClick("stop").catch(() => { });
                 }
                 config = updateConfig(process.cwd(), { enabled });
