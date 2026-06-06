@@ -716,7 +716,13 @@ export default function (pi: ExtensionAPI): void {
         if (!pendingTts) return;
 
         const textBlocks = extractAssistantTextBlocks(event?.message);
-        if (textBlocks.length === 0) return;
+        if (textBlocks.length === 0) {
+            logger.debug(
+                { role: event?.message?.role, contentType: typeof event?.message?.content },
+                "message_end yielded 0 text blocks"
+            );
+            return;
+        }
 
         // Eco mode: overwrite with each assistant message so only the LAST one survives.
         // (We overwrite, not push, because we only want the final response spoken — not tool output.)
@@ -738,7 +744,6 @@ export default function (pi: ExtensionAPI): void {
 
         const assistantTexts = Array.isArray(event?.messages)
             ? event.messages
-                .filter((m: any) => m?.role === "assistant")
                 .flatMap((m: any) => extractAssistantTextBlocks(m))
             : [];
 
@@ -778,7 +783,10 @@ export default function (pi: ExtensionAPI): void {
             if (segments.length > 0) {
                 void speakSegments(segments, ctx);
             } else {
-                logger.warn({ eventHasMessages: Array.isArray(event?.messages) }, "No speakable text found for eco TTS");
+                logger.warn(
+                    { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length },
+                    "No speakable text found for eco TTS"
+                );
             }
             return;
         }
@@ -788,7 +796,10 @@ export default function (pi: ExtensionAPI): void {
         if (!spokeViaMessageEnd && assistantTexts.length > 0) {
             void speakSegments(assistantTexts, ctx);
         } else if (!spokeViaMessageEnd) {
-            logger.warn({ eventHasMessages: Array.isArray(event?.messages) }, "No speakable text found for non-eco TTS");
+            logger.warn(
+                { eventHasMessages: Array.isArray(event?.messages), messageCount: event?.messages?.length },
+                "No speakable text found for non-eco TTS"
+            );
         }
         spokeViaMessageEnd = false;
     });
