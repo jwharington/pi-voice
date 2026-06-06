@@ -93,8 +93,8 @@ export class VadProcessor {
       if (this.smoothedLevel >= this.config.speechThreshold) {
         this.isSpeech = true;
         this.speechStartTime = now;
-        this.buffer = [];
-        this.sampleCount = 0;
+        // Start buffer with the triggering chunk so initial speech isn't dropped.
+        this.buffer = [chunk];
         this.callbacks.onSpeechStart?.();
       }
       this.sampleCount += sampleCount;
