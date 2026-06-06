@@ -12,6 +12,9 @@ export type SpeechProvider = "local" | "gemini" | "openai" | "elevenlabs";
 /** Controls how voice messages are delivered when the agent is busy */
 export type DeliveryMode = "steer" | "followUp";
 
+/** Controls what happens with final transcript text after recording. */
+export type InputMode = "draft" | "autoSend";
+
 export interface PiVoiceConfig {
   /**
   * Pi in-app shortcut string for toggle-to-record (e.g. "f12").
@@ -24,6 +27,13 @@ export interface PiVoiceConfig {
   enabled: boolean;
   /** Whether to synthesize spoken output (default: true) */
   ttsEnabled: boolean;
+  /**
+   * How final transcript text is delivered:
+   * - "draft": insert into editor for review/edit
+   * - "autoSend": send directly as a user message
+   * Default: "autoSend".
+   */
+  inputMode: InputMode;
   /**
    * Eco mode — lightweight voice interface where speech goes to Pi
    * and only the final response is spoken back (no intermediate
@@ -73,6 +83,7 @@ function defaultConfig(): PiVoiceConfig {
     provider: DEFAULT_PROVIDER,
     enabled: true,
     ttsEnabled: true,
+    inputMode: "autoSend",
     ecoMode: true,
     deliveryMode: "followUp",
     volume: 1.0,
@@ -93,6 +104,7 @@ const configFileSchema = z.object({
   enabled: z.boolean().optional().default(true),
   ecoMode: z.boolean().optional().default(true),
   tts: z.boolean().optional().default(true),
+  inputMode: z.enum(["draft", "autoSend"]).optional(),
   deliveryMode: z.enum(["steer", "followUp"]).optional().default("followUp"),
   sttBaseUrl: z.string().url().min(1).optional(),
   ttsBaseUrl: z.string().url().min(1).optional(),
@@ -227,6 +239,9 @@ export function loadConfig(cwd: string): PiVoiceConfig {
     provider: parsed.provider,
     enabled: parsed.enabled,
     ttsEnabled: parsed.tts,
+    // Backward compatibility: if inputMode is missing, preserve legacy behavior
+    // where tts=true implied auto-send and tts=false implied draft.
+    inputMode: parsed.inputMode ?? (parsed.tts ? "autoSend" : "draft"),
     ecoMode: parsed.ecoMode ?? true,
     deliveryMode: parsed.deliveryMode ?? "followUp",
     volume: parsed.volume ?? 1.0,
@@ -238,7 +253,7 @@ export function loadConfig(cwd: string): PiVoiceConfig {
   };
 }
 
-type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
+type ConfigPatch = Partial<Pick<PiVoiceConfig, "shortcut" | "provider" | "enabled" | "ttsEnabled" | "inputMode" | "ecoMode" | "deliveryMode" | "volume" | "sttBaseUrl" | "ttsBaseUrl" | "sttModel" | "ttsModel" | "ttsVoice">>;
 
 /**
  * Persist partial config updates and return the merged effective config.
@@ -260,6 +275,7 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
       provider: next.provider,
       enabled: next.enabled,
       tts: next.ttsEnabled,
+      inputMode: next.inputMode,
       ecoMode: next.ecoMode,
       deliveryMode: next.deliveryMode,
       volume: next.volume,

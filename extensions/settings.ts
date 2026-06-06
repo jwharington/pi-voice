@@ -52,6 +52,9 @@ export async function createSettingsComponent(
       case "tts":
         patch.ttsEnabled = newValue === "On";
         break;
+      case "inputMode":
+        patch.inputMode = newValue as PiVoiceConfig["inputMode"];
+        break;
       case "volume":
         const vol = parseFloat(newValue.replace("%", "")) / 100;
         if (!isNaN(vol)) patch.volume = Math.max(0, Math.min(1, vol));
@@ -151,6 +154,13 @@ export async function createSettingsComponent(
       description: "Enable/disable text-to-speech",
       currentValue: config.ttsEnabled ? "On" : "Off",
       values: ["On", "Off"],
+    },
+    {
+      id: "inputMode",
+      label: "Input Mode",
+      description: "How final transcript is delivered",
+      currentValue: config.inputMode,
+      values: ["draft", "autoSend"],
     },
     {
       id: "volume",

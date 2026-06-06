@@ -29,7 +29,7 @@
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from "@mariozechner/pi-coding-agent";
 import { AudioRecorder, playClick, playPcmStream, stopPlayback } from "../src/services/audio.js";
-import { transcribeStreaming, type SttStreamCallbacks } from "../src/services/stt.js";
+import { transcribeStreaming } from "../src/services/stt.js";
 import { VadProcessor, type VadCallbacks } from "../src/services/vad.js";
 import { synthesizeStream, speakLocal } from "../src/services/tts.js";
 import { createSettingsComponent } from "./settings.js";
@@ -153,7 +153,7 @@ function renderInterimTranscriptInPrompt(ctx: ExtensionContext): void {
         editorTextBeforeRecording.length > 0 && !editorTextBeforeRecording.endsWith(" ")
             ? " "
             : "";
-    ctx.ui.setEditorText(`${editorTextBeforeRecording}${sep}${preview}`);
+    ctx.ui.setEditorText(`${editorTextBeforeRecording}${sep}🎤 ${preview}`);
     interimPreviewActive = true;
 }
 
@@ -388,8 +388,8 @@ async function runPipeline(
 
         logger.info({ transcript: finalTranscript }, "Transcript ready");
 
-        if (!config.ttsEnabled) {
-            // Inject transcript into the editor buffer – user can edit / submit
+        if (config.inputMode === "draft") {
+            // Insert final transcript into editor for review/edit.
             const current = ctx.ui.getEditorText();
             const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
             ctx.ui.setEditorText(`${current}${sep}${finalTranscript}`);
@@ -397,7 +397,8 @@ async function runPipeline(
             return;
         }
 
-        // ── Send to active pi session ─────────────────────────────────────
+        // ── Auto-send to active pi session ────────────────────────────────
+        // TTS playback itself is still controlled by config.ttsEnabled.
         setStatus(ctx, "thinking…");
         pendingTts = true;
         pi.sendUserMessage(finalTranscript, {
@@ -719,7 +720,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
                 if (restParts.length < 2) {
-                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|eco|enabled|deliveryMode|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
+                    ctx.ui.notify("Usage: /voice set <shortcut|provider|tts|inputMode|eco|enabled|deliveryMode|sttModel|sttBaseUrl|ttsModel|ttsVoice|sttBaseUrl|ttsBaseUrl> <value>", "info");
                     return;
                 }
 
@@ -755,6 +756,18 @@ export default function (pi: ExtensionAPI): void {
                         config = updateConfig(process.cwd(), { enabled: parsed });
                     }
                     ctx.ui.notify(`${field} set to ${parsed}`, "info");
+                    return;
+                }
+
+                if (field === "inputmode" || field === "input-mode" || field === "input_mode") {
+                    const mode = value.trim().toLowerCase();
+                    if (!mode || !["draft", "autosend", "auto-send", "auto_send"].includes(mode)) {
+                        ctx.ui.notify("inputMode must be one of: draft, autoSend", "warning");
+                        return;
+                    }
+                    const normalized = mode === "draft" ? "draft" : "autoSend";
+                    config = updateConfig(process.cwd(), { inputMode: normalized });
+                    ctx.ui.notify(`inputMode set to ${normalized}`, "info");
                     return;
                 }
 
@@ -826,7 +839,7 @@ export default function (pi: ExtensionAPI): void {
                     return;
                 }
 
-                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, eco, enabled, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
+                ctx.ui.notify("Unknown setting. Use: shortcut, provider, tts, inputMode, eco, enabled, volume, deliveryMode, sttModel, sttBaseUrl, ttsModel, ttsVoice, ttsBaseUrl", "warning");
                 return;
             }
 
@@ -865,6 +878,7 @@ export default function (pi: ExtensionAPI): void {
                     `provider:  ${config.provider}`,
                     `enabled:   ${config.enabled}`,
                     `tts:       ${config.ttsEnabled}`,
+                    `inputMode: ${config.inputMode}`,
                     `volume:    ${config.volume} (${Math.round(config.volume * 100)}%)`,
                     `ecoMode:   ${config.ecoMode} (${config.ecoMode ? "concise" : "full"})`,
                     `deliveryMode: ${config.deliveryMode} (${config.deliveryMode === "steer" ? "interrupt" : "queue"})`,
@@ -905,7 +919,7 @@ export default function (pi: ExtensionAPI): void {
                 ctx.ui.notify(`pi-voice: ${state}  (config not loaded)`, "info");
                 return;
             }
-            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
+            ctx.ui.notify(`pi-voice: ${state}  (${config.provider}, enabled=${config.enabled}, tts=${config.ttsEnabled}, inputMode=${config.inputMode}, volume=${config.volume}, eco=${config.ecoMode ? "concise" : "full"}, delivery=${config.deliveryMode})`, "info");
         },
     });
 }
