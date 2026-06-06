@@ -92,6 +92,9 @@ let lastStopTime = 0;
 /** Marks the next `agent_end` event as voice-triggered so TTS fires. */
 let pendingTts = false;
 
+/** Tracks whether we already started TTS from message_end for the current voice turn. */
+let spokeViaMessageEnd = false;
+
 /** True while TTS playback is active — pressing the shortcut cancels speech. */
 let isSpeaking = false;
 
@@ -413,6 +416,7 @@ async function runPipeline(
         // TTS playback itself is still controlled by config.ttsEnabled.
         setStatus(ctx, "thinking…");
         pendingTts = true;
+        spokeViaMessageEnd = false;
         pi.sendUserMessage(finalTranscript, {
           deliverAs: config!.deliveryMode as DeliveryMode,
         });
@@ -566,51 +570,61 @@ export default function (pi: ExtensionAPI): void {
     /** Accumulates assistant text blocks during an agent turn (for eco mode). */
     let ttsQueue: string[] = [];
 
-    // Listen for message_end to speak immediately — no waiting for tool execution.
+    function extractTextBlocksFromMessage(message: any): string[] {
+        if (!message || message.role !== "assistant") return [];
+        const blocks = Array.isArray(message.content) ? message.content : [];
+        return blocks
+            .filter((b: any) => b?.type === "text" && typeof b.text === "string" && b.text.trim())
+            .map((b: any) => b.text.trim());
+    }
+
+    // Listen for message_end to speak as early as possible when supported by the host.
     // Important: do not await TTS here, otherwise message lifecycle completion can be blocked
     // and Pi may remain in "working..." until playback completes.
     pi.on("message_end" as any, (event: any, ctx: any) => {
-        // Only process assistant messages from voice-triggered turns.
-        if (event.message.role !== "assistant") return;
+        if (!pendingTts) return;
 
-        const blocks = event.message.content;
-        const textBlocks = blocks
-            .filter((b: any) => b.type === "text" && b.text.trim())
-            .map((b: any) => b.text.trim()) as string[];
-
+        const textBlocks = extractTextBlocksFromMessage(event?.message);
         if (textBlocks.length === 0) return;
 
-        // Eco mode: queue messages and speak the last one at agent_end
+        // Eco mode: queue messages and speak only the final one at agent_end
         if (config?.ecoMode) {
-            // Clear previous queue on new assistant message (overwrites prior segments)
-            if (pendingTts) {
-                ttsQueue = textBlocks;
-            }
+            ttsQueue = textBlocks;
             return;
         }
 
         // Non-eco mode: speak immediately
-        if (!pendingTts) return;
-
+        spokeViaMessageEnd = true;
         void speakSegments(textBlocks, ctx);
     });
 
-    // At agent_end, flush the eco-mode queue (speak the final response).
-    // Also non-blocking to avoid keeping the session in "working...".
-    pi.on("agent_end", (_event, ctx) => {
+    // At agent_end, always provide a fallback path from event.messages so TTS works
+    // even on hosts that do not emit message_end.
+    pi.on("agent_end", (event: any, ctx) => {
         if (!pendingTts) return;
         pendingTts = false;
 
-        // In eco mode, speak the last queued assistant message
-        if (config?.ecoMode && ttsQueue.length > 0) {
-            const queued = ttsQueue;
+        const assistantTexts = Array.isArray(event?.messages)
+            ? event.messages.flatMap((m: any) => extractTextBlocksFromMessage(m))
+            : [];
+
+        if (config?.ecoMode) {
+            const finalText = ttsQueue.length > 0
+                ? ttsQueue[ttsQueue.length - 1]!
+                : assistantTexts.length > 0
+                    ? assistantTexts[assistantTexts.length - 1]!
+                    : undefined;
             ttsQueue = [];
-            void speakSegments([queued[queued.length - 1]!], ctx);
+            if (finalText) void speakSegments([finalText], ctx);
             return;
         }
 
-        // Non-eco mode already spoke via message_end; nothing more to do.
+        // Non-eco mode: if message_end already spoke, skip fallback to avoid duplicates.
         ttsQueue = [];
+        if (!spokeViaMessageEnd && assistantTexts.length > 0) {
+            void speakSegments(assistantTexts, ctx);
+        }
+        spokeViaMessageEnd = false;
     });
 
     /** Speak text segments through TTS (handles volume, provider, cancellation). */
