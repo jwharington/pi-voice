@@ -250,10 +250,13 @@ export type VoiceInfo = { voiceId: string; voiceName: string };
  * Cloud providers query their APIs; local queries the system.
  */
 export async function getVoicesForProvider(
-  provider: "local" | "gemini" | "openai" | "elevenlabs",
+  provider: "local" | "gemini" | "openai" | "elevenlabs" | "gemma",
 ): Promise<VoiceInfo[]> {
   switch (provider) {
     case "openai":
+      return getOpenAIVoices();
+    case "gemma":
+      // Gemma multimodal STT has no voice list; reuse OpenAI-compatible list for optional TTS backends.
       return getOpenAIVoices();
     case "gemini":
       return getGeminiVoices().map((voice) => ({ voiceId: voice, voiceName: voice }));

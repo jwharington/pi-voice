@@ -390,6 +390,8 @@ export async function* synthesizeStream(
         "Local TTS does not support PCM streaming. Use speakLocal() instead.",
       );
     case "openai":
+    case "gemma":
+      // Gemma uses an OpenAI-compatible endpoint in this setup.
       yield* synthesizeStreamOpenAI(text, options);
       break;
     case "elevenlabs":

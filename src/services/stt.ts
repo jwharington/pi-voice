@@ -112,9 +112,71 @@ async function transcribeGemini(audioBuffer: Buffer): Promise<string> {
   return response.text?.trim() ?? "";
 }
 
+async function transcribeGemma(audioBuffer: Buffer, options?: SttOptions): Promise<string> {
+  const baseUrl = ensureV1Prefix(resolveBaseUrl(options?.sttBaseUrl));
+  if (!baseUrl) {
+    throw new Error("sttBaseUrl (or OPENAI_BASE_URL) is required for gemma provider");
+  }
+
+  const model = options?.sttModel ?? process.env.OPENAI_STT_MODEL ?? "gemma4-12b-it";
+  const apiKey = resolveApiKey(baseUrl) ?? "sk-test";
+  const dataUrl = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "You are a speech-to-text engine. Transcribe the audio verbatim. Output only the spoken words, preserving language and punctuation when clear. Do not translate. Do not summarize. Do not infer or add words. If uncertain, leave it as heard. If the audio is empty, noise-only, or unintelligible, return an empty string.",
+            },
+            { type: "audio_url", audio_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      temperature: 0,
+      max_tokens: 256,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Gemma STT failed (${response.status}): ${body.slice(0, 300)}`);
+  }
+
+  const json = await response.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const content = json.choices?.[0]?.message?.content ?? "";
+  return sanitizeTranscriptionText(content);
+}
+
 // ── OpenAI STT ───────────────────────────────────────────────────────
 
 const DEFAULT_OPENAI_STT_MODEL = "whisper-1";
+
+function looksLikeNonTranscript(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+
+  return (
+    /^i\s+(can't|cannot)\s+help\s+you\s+with\s+that\b/.test(normalized) ||
+    /^i\s*(am|’m|'m)\s+sorry\b/.test(normalized) ||
+    /^sorry[,\s]/.test(normalized) ||
+    /^as\s+an\s+ai\b/.test(normalized) ||
+    /^i\s+am\s+not\s+sure\s+i\s+can\s+help\s+with\s+that\b/.test(normalized) ||
+    /^i\s+(can't|cannot|won't|am unable to)\b/.test(normalized)
+  );
+}
 
 function sanitizeTranscriptionText(raw: string): string {
   let text = raw.trim();
@@ -144,7 +206,15 @@ function sanitizeTranscriptionText(raw: string): string {
     }
   }
 
-  return text.replace(/\s+/g, " ").trim();
+  text = text.replace(/\s+/g, " ").trim();
+
+  // Guard against chat-model refusal/help text leaking into STT pipeline.
+  if (looksLikeNonTranscript(text)) {
+    logger.info({ text }, "Filtered likely non-transcript STT output");
+    return "";
+  }
+
+  return text;
 }
 
 function pcmFloat32ToWav(samples: Float32Array, sampleRate = 16000): Buffer {
@@ -475,6 +545,9 @@ export async function transcribe(
     case "elevenlabs":
       text = await transcribeElevenLabs(pcmInt16ToWav(pcm));
       break;
+    case "gemma":
+      text = await transcribeGemma(pcmInt16ToWav(pcm), options);
+      break;
     case "gemini":
     default:
       text = await transcribeGemini(pcmInt16ToWav(pcm));
@@ -518,6 +591,10 @@ export async function transcribeStreaming(
     }
     case "elevenlabs":
       text = await transcribeElevenLabs(pcmInt16ToWav(pcm));
+      callbacks.onDone?.(text);
+      break;
+    case "gemma":
+      text = await transcribeGemma(pcmInt16ToWav(pcm), options);
       callbacks.onDone?.(text);
       break;
     case "gemini":

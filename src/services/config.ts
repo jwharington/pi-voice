@@ -7,7 +7,7 @@ import logger from "./logger.js";
 // ── Types ────────────────────────────────────────────────────────────
 
 /** Supported speech provider */
-export type SpeechProvider = "local" | "gemini" | "openai" | "elevenlabs";
+export type SpeechProvider = "local" | "gemini" | "openai" | "elevenlabs" | "gemma";
 
 /** Controls how voice messages are delivered when the agent is busy */
 export type DeliveryMode = "steer" | "followUp";
@@ -87,6 +87,7 @@ export interface PiVoiceConfig {
 
 const DEFAULT_SHORTCUT = "f12";
 const DEFAULT_PROVIDER: SpeechProvider = "local";
+const DEFAULT_GEMMA_STT_MODEL = "gemma4-12b-it";
 
 function defaultConfig(): PiVoiceConfig {
   return {
@@ -113,7 +114,7 @@ const configFileSchema = z.object({
    * Accepted for backward-compatibility; `shortcut` takes precedence when both are present.
    */
   key: z.string().min(1).optional(),
-  provider: z.enum(["local", "gemini", "openai", "elevenlabs"]).optional().default(DEFAULT_PROVIDER),
+  provider: z.enum(["local", "gemini", "openai", "elevenlabs", "gemma"]).optional().default(DEFAULT_PROVIDER),
   enabled: z.boolean().optional().default(true),
   ecoMode: z.boolean().optional().default(true),
   tts: z.boolean().optional().default(true),
@@ -283,6 +284,11 @@ export function updateConfig(cwd: string, patch: ConfigPatch): PiVoiceConfig {
     ...current,
     ...patch,
   };
+
+  // Auto-migrate incompatible STT model when switching to Gemma multimodal STT.
+  if (next.provider === "gemma" && (!next.sttModel || next.sttModel === "whisper-1")) {
+    next.sttModel = DEFAULT_GEMMA_STT_MODEL;
+  }
 
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(

@@ -146,7 +146,7 @@ export async function createSettingsComponent(
       label: "Speech Provider",
       description: "Provider for STT and TTS",
       currentValue: config.provider,
-      values: ["local", "gemini", "openai", "elevenlabs"],
+      values: ["local", "gemini", "openai", "elevenlabs", "gemma"],
     },
     {
       id: "enabled",

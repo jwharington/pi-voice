@@ -6,7 +6,7 @@
  *
  * Features:
  *   - Toggle-to-record via a configurable in-pi keyboard shortcut
- *   - STT via local Whisper, Gemini, OpenAI, or ElevenLabs
+ *   - STT via local Whisper, Gemini, OpenAI, ElevenLabs, or Gemma (multimodal)
  *   - Transcripts routed to the active pi session
  *   - Optional TTS playback via the same provider (or macOS `say`)
  *   - Short click cues when recording starts/stops
@@ -16,7 +16,7 @@
  * Configuration (.pi/pi-voice.json):
  *   {
  *     "shortcut": "f12",            // default
- *     "provider": "local",          // local | gemini | openai | elevenlabs
+ *     "provider": "local",          // local | gemini | openai | elevenlabs | gemma
  *     "tts": true
  *   }
  *
@@ -113,6 +113,7 @@ let intermediateTranscript = "";
 /** Flag: in-flight transcription of a VAD-detected utterance. Prevents concurrent calls. */
 let transcriptionPending = false;
 
+
 /** Extension context reference for use in VAD callbacks (scoped to session). */
 let activeCtx: ExtensionContext | null = null;
 
@@ -159,8 +160,17 @@ function renderInterimTranscriptInPrompt(ctx: ExtensionContext): void {
         editorTextBeforeRecording.length > 0 && !editorTextBeforeRecording.endsWith(" ")
             ? " "
             : "";
-    ctx.ui.setEditorText(`${editorTextBeforeRecording}${sep}🎤 ${preview}`);
+    const previewText = `${editorTextBeforeRecording}${sep}🎤 ${preview}`;
+    ctx.ui.setEditorText(previewText);
     interimPreviewActive = true;
+    logger.info(
+        {
+            previewLength: preview.length,
+            totalEditorLength: previewText.length,
+            inputMode: config?.inputMode,
+        },
+        "Interim preview rendered",
+    );
 }
 
 function showMicListeningIndicatorInPrompt(ctx: ExtensionContext): void {
@@ -177,6 +187,10 @@ function clearInterimTranscriptFromPrompt(ctx: ExtensionContext): void {
     if (!interimPreviewActive) return;
     ctx.ui.setEditorText(editorTextBeforeRecording);
     interimPreviewActive = false;
+}
+
+function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
 function cancelTtsPlayback(ctx: ExtensionContext): void {
@@ -272,7 +286,15 @@ function startRecording(ctx: ExtensionContext): void {
     interimPreviewActive = false;
     showMicListeningIndicatorInPrompt(ctx);
     activeCtx = ctx;
-    vadProcessor = new VadProcessor({}, createVadCallbacks(ctx));
+    vadProcessor = new VadProcessor(
+        {
+            // More aggressive chunking so interim preview updates during recording
+            silenceThresholdMs: 350,
+            speechThreshold: 0.0015,
+            maxSpeechDurationMs: 1200,
+        },
+        createVadCallbacks(ctx),
+    );
 
     recorder = new AudioRecorder();
     recorder.start({
@@ -305,6 +327,14 @@ function createVadCallbacks(ctx: ExtensionContext): VadCallbacks {
                 // Ignore very short utterances (< 50ms)
                 return;
             }
+            logger.info(
+                {
+                    bytes: utterance.byteLength,
+                    provider: config?.provider,
+                    inputMode: config?.inputMode,
+                },
+                "VAD utterance ready",
+            );
             if (!config || !activePi) return;
             // Transcribe the utterance in the background (non-blocking)
             void transcribeUtterance(utterance, ctx);
@@ -316,7 +346,7 @@ function createVadCallbacks(ctx: ExtensionContext): VadCallbacks {
 async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<void> {
     // Prevent concurrent transcription calls
     if (transcriptionPending) {
-        logger.debug("Skipping concurrent transcription");
+        logger.info("Skipping concurrent transcription");
         return;
     }
 
@@ -328,7 +358,7 @@ async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<
         let utteranceFromDelta = "";
 
         await transcribeStreaming(
-            pcm.buffer as ArrayBuffer,
+            bufferToArrayBuffer(pcm),
             config!.provider,
             {
                 sttModel: config!.sttModel,
@@ -343,6 +373,14 @@ async function transcribeUtterance(pcm: Buffer, ctx: ExtensionContext): Promise<
                 },
                 onDone: (text) => {
                     const utteranceFinal = text.trim() || utteranceFromDelta.trim();
+                    logger.info(
+                        {
+                            textLength: text.trim().length,
+                            deltaLength: utteranceFromDelta.trim().length,
+                            finalLength: utteranceFinal.length,
+                        },
+                        "Intermediate transcription result",
+                    );
                     if (!utteranceFinal) return;
                     const parts = [transcriptBeforeUtterance, utteranceFinal].filter(Boolean);
                     intermediateTranscript = parts.join(" ");
@@ -386,7 +424,7 @@ async function runPipeline(
         // the full transcription is more accurate (handles segment boundaries).
         setStatus(ctx, "transcribing…");
         transcript = await transcribeStreaming(
-            pcm.buffer as ArrayBuffer,
+            bufferToArrayBuffer(pcm),
             config.provider,
             {
                 sttModel: config.sttModel,
@@ -426,8 +464,12 @@ async function runPipeline(
 
         // ── Auto-send to active pi session ────────────────────────────────
         // TTS playback itself is still controlled by config.ttsEnabled.
-        setStatus(ctx, "thinking…");
-        pendingTts = true;
+        if (config.ttsEnabled) {
+            setStatus(ctx, "thinking…");
+        } else {
+            ctx.ui.setStatus(STATUS_KEY, undefined);
+        }
+        pendingTts = !!config.ttsEnabled;
         spokeViaMessageEnd = false;
         pi.sendUserMessage(finalTranscript, {
           deliverAs: config!.deliveryMode as DeliveryMode,
@@ -470,7 +512,7 @@ export default function (pi: ExtensionAPI): void {
 
     // ── Session lifecycle ─────────────────────────────────────────────
     pi.on("session_start", (_event, _ctx) => {
-        logger.info({ shortcut: config!.shortcut }, "pi-voice extension active");
+        logger.info({ shortcut: config!.shortcut, vadDebugBuild: "2026-06-08" }, "pi-voice extension active");
     });
 
     pi.on("session_shutdown", (_event, ctx) => {
@@ -757,7 +799,7 @@ export default function (pi: ExtensionAPI): void {
     // Important: do not await TTS here, otherwise message lifecycle completion can be blocked
     // and Pi may remain in "working..." until playback completes.
     pi.on("message_end" as any, (event: any, ctx: any) => {
-        if (!pendingTts) return;
+        if (!pendingTts || !config?.ttsEnabled) return;
 
         let textBlocks = extractAssistantTextBlocks(event?.message);
         // Fallback for eco mode: allow model/agent roles if strict extraction failed
@@ -790,7 +832,10 @@ export default function (pi: ExtensionAPI): void {
     // At agent_end, always provide a fallback path from event.messages so TTS works
     // even on hosts that do not emit message_end.
     pi.on("agent_end", (event: any, ctx) => {
-        if (!pendingTts) return;
+        if (!pendingTts || !config?.ttsEnabled) {
+            pendingTts = false;
+            return;
+        }
         pendingTts = false;
 
         // Debug: log all message roles and content shapes at agent_end
@@ -878,6 +923,12 @@ export default function (pi: ExtensionAPI): void {
         ctx: ExtensionContext,
     ): Promise<void> {
         if (!config) return;
+
+        if (!config.ttsEnabled) {
+            logger.info("TTS skipped: disabled in config");
+            ctx.ui.setStatus(STATUS_KEY, undefined);
+            return;
+        }
 
         // Volume control: 0.0 disables TTS entirely
         if (config.volume === 0) {
@@ -1011,8 +1062,8 @@ export default function (pi: ExtensionAPI): void {
 
                 if (field === "provider") {
                     const provider = value.toLowerCase();
-                    if (!["local", "gemini", "openai", "elevenlabs"].includes(provider)) {
-                        ctx.ui.notify("Provider must be one of: local, gemini, openai, elevenlabs", "warning");
+                    if (!["local", "gemini", "openai", "elevenlabs", "gemma"].includes(provider)) {
+                        ctx.ui.notify("Provider must be one of: local, gemini, openai, elevenlabs, gemma", "warning");
                         return;
                     }
                     config = updateConfig(process.cwd(), { provider: provider as PiVoiceConfig["provider"] });
